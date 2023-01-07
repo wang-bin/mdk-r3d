@@ -168,14 +168,17 @@ R3DSDK::VideoPixelType from(PixelFormat fmt)
 
 static R3DSDK::VideoDecodeMode GetScaleMode(uint32_t w, uint32_t h, uint32_t W, uint32_t H)
 {
-    auto scaleX = w > 0 ? W / w : 1;
-    auto scaleY = h > 0 ? H / h : 1;
-    switch (std::max<uint32_t>(scaleX, scaleY)) {
-    case 2: return R3DSDK::DECODE_HALF_RES_GOOD;
-    case 4: return R3DSDK::DECODE_QUARTER_RES_GOOD;
-    case 8: return R3DSDK::DECODE_EIGHT_RES_GOOD;
-    case 16: return R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
-    }
+    const auto scaleX = w > 0 ? (float)W / (float)w : 1.0f;
+    const auto scaleY = h > 0 ? (float)H / (float)h : 1.0f;
+    const auto scale = std::max<float>(scaleX, scaleY);
+    if (scale >= 12.0f) // (16+8)/2
+        return R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
+    if (scale >= 6.0f) // (8+4)/2
+        return R3DSDK::DECODE_EIGHT_RES_GOOD;
+    if (scale >= 3.0f) // (4+2)/2
+        return R3DSDK::DECODE_QUARTER_RES_GOOD;
+    if (scale >= 1.5f) // (2+1)/2
+        return R3DSDK::DECODE_HALF_RES_GOOD;
     // DECODE_ROCKET_CUSTOM_RES for rocket?
     return R3DSDK::DECODE_FULL_RES_PREMIUM;
 }
