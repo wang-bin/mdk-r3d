@@ -96,6 +96,12 @@ void to(MediaInfo& info, const R3DSDK::Clip* clip)
     info.streams = clip->VideoTrackCount();
     if (info.streams <= 0)
         return;
+
+    const auto m = clip->MetadataCount();
+    for (size_t i = 0; i < m; ++i) {
+        info.metadata.emplace(clip->MetadataItemKey(i).data(), clip->MetadataItemAsString(i).data());
+    }
+
     VideoCodecParameters vcp;
     vcp.codec = "r3d";
     vcp.width = clip->Width();
@@ -139,7 +145,7 @@ PixelFormat to(R3DSDK::VideoPixelType fmt)
     case PixelType_8Bit_BGRA_Interleaved: return PixelFormat::BGRA;
     //case PixelType_10Bit_DPX_MethodB: return PixelFormat::;
     //case PixelType_12Bit_BGR_Interleaved: return PixelFormat::;
-    case PixelType_8Bit_BGR_Interleaved: return PixelFormat::BGR24;
+    case PixelType_8Bit_BGR_Interleaved: return PixelFormat::BGR24; // ?
     //case PixelType_HalfFloat_RGB_Interleaved: return PixelFormat::RGBF16;
     //case PixelType_HalfFloat_RGB_ACES_Int: return PixelFormat::RGBF16;
     default:
