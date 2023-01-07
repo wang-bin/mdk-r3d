@@ -71,11 +71,13 @@ private:
     R3DSDK::R3DDecoder* dec_ = nullptr;
     mutex job_mtx_;
     vector<R3DSDK::R3DDecodeJob*> job_;
-    vector<VideoFrame> frame_;
+    vector<VideoFrame> frame_; // static frame pool, reduce mem allocation
+    int frame_idx_ = 0; // current frame index in pool
 
     int gpu_ = OPTION_RED_OPENCL;
     PixelFormat format_ = PixelFormat::BGRA;
     int copy_ = 1; // copy gpu resources
+    R3DSDK::VideoDecodeMode mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
     uint32_t scaleToW_ = 0; // closest down scale to target width
     uint32_t scaleToH_ = 0;
     int64_t duration_ = 0;
@@ -158,6 +160,30 @@ R3DSDK::VideoPixelType from(PixelFormat fmt)
     }
 }
 
+static R3DSDK::VideoDecodeMode GetScaleMode(uint32_t w, uint32_t h, uint32_t W, uint32_t H)
+{
+    auto scaleX = w > 0 ? W / w : 1;
+    auto scaleY = h > 0 ? H / h : 1;
+    switch (std::max<uint32_t>(scaleX, scaleY)) {
+    case 2: return R3DSDK::DECODE_HALF_RES_GOOD;
+    case 4: return R3DSDK::DECODE_QUARTER_RES_GOOD;
+    case 8: return R3DSDK::DECODE_EIGHT_RES_GOOD;
+    case 16: return R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
+    }
+    // DECODE_ROCKET_CUSTOM_RES for rocket?
+    return R3DSDK::DECODE_FULL_RES_PREMIUM;
+}
+
+static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
+{
+    switch (mode) {
+    case R3DSDK::DECODE_HALF_RES_GOOD: return x/2;
+    case R3DSDK::DECODE_QUARTER_RES_GOOD: return x/4;
+    case R3DSDK::DECODE_EIGHT_RES_GOOD: return x/8;
+    case R3DSDK::DECODE_SIXTEENTH_RES_GOOD: return x/16;
+    default: return x;
+    }
+}
 
 R3DReader::R3DReader()
     : FrameReader()
@@ -206,8 +232,10 @@ bool R3DReader::load()
     dispatchEvent(e);
 
     if (scaleToW_ > 0 || scaleToH_ > 0) {
-
+        mode_ = GetScaleMode(scaleToW_, scaleToH_, clip_->Width(), clip_->Height());
     }
+    scaleToW_ = Scale(clip_->Width(), mode_);
+    scaleToH_ = Scale(clip_->Height(), mode_);
 
     MediaInfo info;
     to(info, clip_.get());
@@ -392,21 +420,21 @@ bool R3DReader::setupDecoder()
 
 void R3DReader::setupDecodeJobs()
 {
-    const int simultaneousJobs = 4;
+    const int simultaneousJobs = 8; // frame queue size in renderer is 4
     frame_.resize(simultaneousJobs);
     for (int i = 0; i < simultaneousJobs; ++i) {
 		R3DSDK::R3DDecodeJob *job = nullptr;
 		R3DSDK::R3DDecoder::CreateDecodeJob(&job);
         job->clip = clip_.get();
-        job->mode = R3DSDK::DECODE_FULL_RES_PREMIUM; // TODO: option
+        job->mode = mode_; // TODO: option
         job->pixelType = from(format_);
 
-        VideoFrame frame(clip_->Width(), clip_->Height(), format_);
+        VideoFrame frame(scaleToW_, scaleToH_, format_);
         frame.setBuffers(nullptr); // requires 16bytes aligned. already 64bytes aligned
         frame_[i] = frame;
         job->bytesPerRow = frame.buffer()->stride();
         job->outputBuffer = frame.buffer()->data();
-        job->outputBufferSize = frame.format().bytesPerFrame(clip_->Width(), clip_->Height());
+        job->outputBufferSize = frame.format().bytesPerFrame(scaleToW_, scaleToH_);
         job->privateData = nullptr;
         job->videoFrameNo = 0;
         job->videoTrackNo = 0;
@@ -423,14 +451,16 @@ void R3DReader::setupDecodeJobs()
 R3DSDK::R3DDecodeJob* R3DReader::getJob(size_t index)
 {
     for (size_t i = 0; i < job_.size(); ++i) {
-        auto j = job_[i];
+        auto n = (i + frame_idx_) % job_.size();
+        auto j = job_[n];
         if (!j->privateData) {
             j->videoFrameNo = index;
             auto data = new UserData();
             data->reader = this;
             data->index = index;
-            data->frame = frame_[i];
+            data->frame = frame_[n];
             j->privateData = data;
+            frame_idx_++;
             return j;
         }
     }
@@ -502,6 +532,30 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         copy_ = stoi(val);
         return;
     case "scale"_svh: // 1/2, 1/4, 1/8, 1/16
+    case "size"_svh: { // widthxheight or width(height=width)
+        if (val.find('x') != string::npos) { // closest scale to target resolution
+            char* s = nullptr;
+            scaleToW_ = strtoul(val.data(), &s, 10);
+            if (s && s[0] == 'x')
+                scaleToH_ = strtoul(s + 1, nullptr, 10);
+        } else if (val.find('/') != string::npos) { // closest scale to target resolution
+            char* s = nullptr;
+            auto x = strtoul(val.data(), &s, 10);
+            if (s && s[0] == '/')
+                x = strtoul(s + 1, nullptr, 10);
+            if (x == 2)
+                mode_ = R3DSDK::DECODE_HALF_RES_GOOD;
+            else if (x == 4)
+                mode_ = R3DSDK::DECODE_QUARTER_RES_GOOD;
+            else if (x == 8)
+                mode_ = R3DSDK::DECODE_EIGHT_RES_GOOD;
+            else if (x == 16)
+                mode_ = R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
+        } else {
+            scaleToW_ = strtoul(val.data(), nullptr, 10);
+            scaleToH_ = scaleToW_;
+        }
+    }
         return;
     }
 }
