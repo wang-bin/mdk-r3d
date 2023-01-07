@@ -19,8 +19,11 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string_view>
+#include <thread>
 #include "R3DSDK.h"
+#include "R3DSDKDecoder.h"
 
 using namespace std;
 
@@ -49,11 +52,28 @@ protected:
 private:
     bool readAt(uint64_t index);
     void parseDecoderOptions();
-    void setDecoderOption(const char* key, const char* val);
+    bool setupDecoder();
+    void setupDecodeJobs();
 
+    R3DSDK::R3DDecodeJob* getJob(size_t index);
+    void onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status);
+
+    struct UserData {
+        R3DReader* reader = nullptr;
+        uint64_t index = 0;
+        int seekId = 0;
+        bool seekWaitFrame = true;
+        VideoFrame frame;
+    };
 
     bool init_ = false;
     unique_ptr<R3DSDK::Clip> clip_;
+    R3DSDK::R3DDecoder* dec_ = nullptr;
+    mutex job_mtx_;
+    vector<R3DSDK::R3DDecodeJob*> job_;
+    vector<VideoFrame> frame_;
+
+    int gpu_ = OPTION_RED_OPENCL;
     PixelFormat format_ = PixelFormat::BGRA;
     int copy_ = 1; // copy gpu resources
     uint32_t scaleToW_ = 0; // closest down scale to target width
@@ -142,7 +162,7 @@ R3DSDK::VideoPixelType from(PixelFormat fmt)
 R3DReader::R3DReader()
     : FrameReader()
 {
-    const auto ret = R3DSDK::InitializeSdk(".", OPTION_RED_OPENCL);
+    const auto ret = R3DSDK::InitializeSdk(".", OPTION_RED_DECODER);
     init_ = ret == R3DSDK::ISInitializeOK;
     if (ret != R3DSDK::ISInitializeOK) {
         clog << "R3D InitializeSdk error: " << ret << endl;
@@ -177,6 +197,9 @@ bool R3DReader::load()
         return false;
     }
 
+    if (!setupDecoder())
+        return false;
+
     MediaEvent e{};
     e.category = "decoder.video";
     e.detail = "r3d";
@@ -201,6 +224,8 @@ bool R3DReader::load()
     if (state() == State::Stopped) // start with pause
         update(State::Running);
 
+    setupDecodeJobs();
+
     if (seeking_ == 0 && !readAt(0)) // prepare(pos) will seek in changed(MediaInfo)
         return false;
 
@@ -214,6 +239,12 @@ bool R3DReader::unload()
         update(State::Stopped);
         return false;
     }
+
+    for (auto j : job_) {
+        R3DSDK::R3DDecoder::ReleaseDecodeJob(j);
+    }
+    if (dec_)
+        R3DSDK::R3DDecoder::ReleaseDecoder(dec_);
 
     clip_.reset();
     frames_ = 0;
@@ -242,6 +273,20 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
     clog << seeking_ << " Seek to index: " << index << " from " << index_<< endl;
     updateBufferingProgress(0);
 
+    auto job = getJob(index);
+    if (!job)
+        return false;
+    auto data = (UserData*)job->privateData;
+    data->seekId = id;
+    //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
+    const auto status = dec_->decode(job);
+    if (status != R3DSDK::R3DStatus_Ok) {
+        clog << "decode error: " << status << endl;
+        delete data;
+        job->privateData = nullptr;
+        return false;
+    }
+
     return true;
 }
 
@@ -257,6 +302,16 @@ bool R3DReader::readAt(uint64_t index)
     if (!clip_)
         return false;
 
+    auto job = getJob(index);
+    if (!job)
+        return false;
+    const auto status = dec_->decode(job);
+    if (status != R3DSDK::R3DStatus_Ok) {
+        clog << "decode error: " << status << endl;
+        delete (UserData*)job->privateData;
+        job->privateData = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -271,6 +326,160 @@ void R3DReader::parseDecoderOptions()
             }
         }
     }
+}
+
+bool R3DReader::setupDecoder()
+{
+    R3DSDK::R3DDecoderOptions *options = nullptr;
+	R3DSDK::R3DStatus status = R3DSDK::R3DDecoderOptions::CreateOptions(&options);
+    if (status != R3DSDK::R3DStatus_Ok) {
+        clog << "R3DDecoderOptions::CreateOptions error: " << status << endl;
+        return false;
+    }
+    // TODO:
+	options->setMemoryPoolSize(1024);           // 1024+
+	options->setGPUMemoryPoolSize(1024);        // 1024+
+	options->setGPUConcurrentFrameCount(1);     // 1~3
+	options->setScratchFolder("");              //empty string disables scratch folder
+	options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
+	options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
+    //options->useRRXAsync(true);
+
+    if (gpu_ == OPTION_RED_OPENCL) {
+        vector<R3DSDK::OpenCLDeviceInfo> devs;
+		status = options->GetOpenCLDeviceList(devs);
+        if (status != R3DSDK::R3DStatus_Ok) {
+            clog << "GetOpenCLDeviceList error: " << status << endl;
+            return false;
+        }
+        if (devs.empty()) {
+            clog << "No opencl device" << endl;
+            return false;
+        }
+        for (const auto& i : devs) {
+            status = options->useDevice(i);
+            if (status != R3DSDK::R3DStatus_Ok)
+                clog << "useDevice error: " << status << endl;
+        }
+    } else if (gpu_ == OPTION_RED_CUDA) {
+        vector<R3DSDK::CudaDeviceInfo> devs;
+		status = options->GetCudaDeviceList(devs);
+        if (status != R3DSDK::R3DStatus_Ok) {
+            clog << "GetOpenCLDeviceList error: " << status << endl;
+            return false;
+        }
+        if (devs.empty()) {
+            clog << "No cuda device" << endl;
+            return false;
+        }
+        for (const auto& i : devs) {
+            status = options->useDevice(i);
+            if (status != R3DSDK::R3DStatus_Ok)
+                clog << "useDevice error: " << status << endl;
+        }
+    }
+
+    status = R3DSDK::R3DDecoder::CreateDecoder(options, &dec_);
+
+	R3DSDK::R3DDecoderOptions::ReleaseOptions(options);
+    if (status != R3DSDK::R3DStatus_Ok) {
+        clog << "R3DDecoder::CreateDecoder error: " << status << endl;
+        return false;
+    }
+
+    return true;
+}
+
+void R3DReader::setupDecodeJobs()
+{
+    const int simultaneousJobs = 4;
+    frame_.resize(simultaneousJobs);
+    for (int i = 0; i < simultaneousJobs; ++i) {
+		R3DSDK::R3DDecodeJob *job = nullptr;
+		R3DSDK::R3DDecoder::CreateDecodeJob(&job);
+        job->clip = clip_.get();
+        job->mode = R3DSDK::DECODE_FULL_RES_PREMIUM; // TODO: option
+        job->pixelType = from(format_);
+
+        VideoFrame frame(clip_->Width(), clip_->Height(), format_);
+        frame.setBuffers(nullptr); // requires 16bytes aligned. already 64bytes aligned
+        frame_[i] = frame;
+        job->bytesPerRow = frame.buffer()->stride();
+        job->outputBuffer = frame.buffer()->data();
+        job->outputBufferSize = frame.format().bytesPerFrame(clip_->Width(), clip_->Height());
+        job->privateData = nullptr;
+        job->videoFrameNo = 0;
+        job->videoTrackNo = 0;
+        job->imageProcessingSettings = new R3DSDK::ImageProcessingSettings();
+		clip_->GetDefaultImageProcessingSettings(*(job->imageProcessingSettings));
+        job->callback = [](R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status) {
+            auto data = (UserData*)job->privateData;
+            data->reader->onJobComplete(job, status);
+        };
+        job_.push_back(job);
+    }
+}
+
+R3DSDK::R3DDecodeJob* R3DReader::getJob(size_t index)
+{
+    for (size_t i = 0; i < job_.size(); ++i) {
+        auto j = job_[i];
+        if (!j->privateData) {
+            j->videoFrameNo = index;
+            auto data = new UserData();
+            data->reader = this;
+            data->index = index;
+            data->frame = frame_[i];
+            j->privateData = data;
+            return j;
+        }
+    }
+    return nullptr;
+}
+
+void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status)
+{
+    auto data = (UserData*)job->privateData;
+    updateBufferingProgress(100);
+
+    auto index = data->index;
+    auto seekId = data->seekId;
+    auto seekWaitFrame = data->seekWaitFrame;
+    auto frame = data->frame;
+    delete data;
+    job->privateData = nullptr;
+
+    if (index == frames_ - 1) {
+        update(MediaStatus::Loaded|MediaStatus::End); // Options::ContinueAtEnd
+    }
+
+    index_ = index; // update index_ before seekComplete because pending seek may be executed in seekCompleted
+    if (seekId > 0 && seekWaitFrame) {
+        seeking_--;
+        if (seeking_ > 0 && seekId == 0) {
+            seekComplete(duration_ * index / frames_, seekId); // may create a new seek
+            clog << "onJobComplete drop @" << index << endl;
+            return;
+        }
+        seekComplete(duration_ * index / frames_, seekId); // may create a new seek
+    }
+
+    frame.setTimestamp(double(duration_ * index / frames_) / 1000.0);
+    frame.setDuration((double)duration_/(double)frames_ / 1000.0);
+    if (seekId > 0) {
+        frameAvailable(VideoFrame(frame.format()).setTimestamp(frame.timestamp()));
+    }
+    bool accepted = frameAvailable(frame); // false: out of loop range and begin a new loop
+    if (index == frames_ - 1 && seeking_ == 0 && accepted) {
+        accepted = frameAvailable(VideoFrame().setTimestamp(TimestampEOS));
+        if (accepted && !test_flag(options() & Options::ContinueAtEnd)) {
+            thread([=]{ unload(); }).detach(); // TODO:
+        }
+        return;
+    }
+    // frameAvailable() will wait in pause state, and return when seeking, do not read the next index
+    if (accepted && seeking_ == 0 && state() == State::Running && test_flag(mediaStatus() & MediaStatus::Loaded)) // seeking_ > 0: new seek created by seekComplete when continuously seeking
+        readAt(index + 1);
 }
 
 void R3DReader::onPropertyChanged(const std::string& key, const std::string& val)
