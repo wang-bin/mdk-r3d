@@ -125,6 +125,7 @@ void to(MediaInfo& info, const R3DSDK::Clip* clip)
     acp.codec = "pcm";
     acp.format = AudioFormat::SampleFormat::S24; // clip->MetadataItemAsInt(RMD_SAMPLE_SIZE) is always 24
     acp.channels = clip->AudioChannelCount();
+    acp.channel_layout = (uint64_t)clip->MetadataItemAsInt(R3DSDK::RMD_CHANNEL_MASK);
     acp.sample_rate = clip->MetadataItemAsInt(R3DSDK::RMD_SAMPLERATE); // always 48000
 
     asi.frames = clip->AudioSampleCount();
@@ -240,6 +241,7 @@ bool R3DReader::load()
     e.detail = "r3d";
     dispatchEvent(e);
 
+ // TODO: change scale when playing
     if (scaleToW_ > 0 || scaleToH_ > 0) {
         mode_ = GetScaleMode(scaleToW_, scaleToH_, clip_->Width(), clip_->Height());
     }
