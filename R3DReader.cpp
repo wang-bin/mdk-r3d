@@ -39,7 +39,7 @@ public:
         if (unload_fut_.valid())
             unload_fut_.wait();
         if (init_) {
-            R3DSDK::FinalizeSdk(); // FIXME: crash
+            //R3DSDK::FinalizeSdk(); // FIXME: crash
         }
     }
 
@@ -208,7 +208,16 @@ static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
 R3DReader::R3DReader()
     : FrameReader()
 {
-    const auto ret = R3DSDK::InitializeSdk(".", OPTION_RED_DECODER);
+    string sdk_dir = ".";
+    const auto v = GetGlobalOption("R3DSDK_DIR");
+    if (const auto s = get_if<string>(&v))
+        sdk_dir = *s;
+    else if (const auto s = get_if<const char*>(&v))
+        sdk_dir = *s;
+    if (const auto s = getenv("R3DSDK_DIR"))
+        sdk_dir = s;
+    // InitializeSdk must be called only once!
+    static const auto ret = R3DSDK::InitializeSdk(sdk_dir.data(), OPTION_RED_DECODER); // TODO: depends on decoder option, fallback to default if failed
     init_ = ret == R3DSDK::ISInitializeOK;
     if (ret != R3DSDK::ISInitializeOK) {
         clog << "R3D InitializeSdk error: " << ret << endl;
