@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -24,6 +25,7 @@
 #include <thread>
 #include "R3DSDK.h"
 #include "R3DSDKDecoder.h"
+#include "R3DCxxAbi.h"
 
 using namespace std;
 
@@ -34,8 +36,10 @@ class R3DReader final : public FrameReader
 public:
     R3DReader();
     ~R3DReader() override {
+        if (unload_fut_.valid())
+            unload_fut_.wait();
         if (init_) {
-            R3DSDK::FinalizeSdk();
+            R3DSDK::FinalizeSdk(); // FIXME: crash
         }
     }
 
@@ -67,6 +71,7 @@ private:
     };
 
     bool init_ = false;
+    future<void> unload_fut_;
     unique_ptr<R3DSDK::Clip> clip_;
     R3DSDK::R3DDecoder* dec_ = nullptr;
     mutex job_mtx_;
@@ -99,7 +104,11 @@ void to(MediaInfo& info, const R3DSDK::Clip* clip)
 
     const auto m = clip->MetadataCount();
     for (size_t i = 0; i < m; ++i) {
-        info.metadata.emplace(clip->MetadataItemKey(i).data(), clip->MetadataItemAsString(i).data());
+        auto key = MetadataItemKey(clip, i);
+        auto val = MetadataItemAsString(clip, i);
+        info.metadata.emplace(key, val);
+        free(key);
+        free(val);
     }
 
     VideoCodecParameters vcp;
@@ -381,43 +390,15 @@ bool R3DReader::setupDecoder()
 	options->setMemoryPoolSize(1024);           // 1024+
 	options->setGPUMemoryPoolSize(1024);        // 1024+
 	options->setGPUConcurrentFrameCount(1);     // 1~3
-	options->setScratchFolder("");              //empty string disables scratch folder
+	//options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
 	options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
 	options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
     //options->useRRXAsync(true);
 
-    if (gpu_ == OPTION_RED_OPENCL) {
-        vector<R3DSDK::OpenCLDeviceInfo> devs;
-		status = options->GetOpenCLDeviceList(devs);
-        if (status != R3DSDK::R3DStatus_Ok) {
-            clog << "GetOpenCLDeviceList error: " << status << endl;
-            return false;
-        }
-        if (devs.empty()) {
-            clog << "No opencl device" << endl;
-            return false;
-        }
-        for (const auto& i : devs) {
-            status = options->useDevice(i);
-            if (status != R3DSDK::R3DStatus_Ok)
-                clog << "useDevice error: " << status << endl;
-        }
-    } else if (gpu_ == OPTION_RED_CUDA) {
-        vector<R3DSDK::CudaDeviceInfo> devs;
-		status = options->GetCudaDeviceList(devs);
-        if (status != R3DSDK::R3DStatus_Ok) {
-            clog << "GetOpenCLDeviceList error: " << status << endl;
-            return false;
-        }
-        if (devs.empty()) {
-            clog << "No cuda device" << endl;
-            return false;
-        }
-        for (const auto& i : devs) {
-            status = options->useDevice(i);
-            if (status != R3DSDK::R3DStatus_Ok)
-                clog << "useDevice error: " << status << endl;
-        }
+    status = SetupCudaCLDevices(options, gpu_);
+    if (status != R3DSDK::R3DStatus_Ok) {
+        clog << "Setup Cuda/OpenCL Devices error: " << status << endl;
+        return false;
     }
 
     status = R3DSDK::R3DDecoder::CreateDecoder(options, &dec_);
@@ -516,7 +497,9 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
     if (index == frames_ - 1 && seeking_ == 0 && accepted) {
         accepted = frameAvailable(VideoFrame().setTimestamp(TimestampEOS));
         if (accepted && !test_flag(options() & Options::ContinueAtEnd)) {
-            thread([=]{ unload(); }).detach(); // TODO:
+            unload_fut_ = async(launch::async, [=]{
+                unload();
+                });
         }
         return;
     }

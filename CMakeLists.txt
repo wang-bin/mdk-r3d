@@ -14,10 +14,7 @@ set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/sdk" CACHE STRING "R3D SDK dir")
 if(NOT EXISTS ${R3DSDK}/Include/R3DSDK.h)
   return()
 endif()
-if(CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CMAKE_CXX_COMPILER_ID MATCHES GNU)
-# TODO: r3d c++ abi code build with gnu stl
-    return()
-endif()
+
 find_package(Threads)
 link_libraries(Threads::Threads)
 
@@ -25,6 +22,7 @@ include(cmake/FindMDK.cmake)
 
 add_library(${PROJECT_NAME} MODULE
     R3DReader.cpp
+    R3DCxxAbi.cpp
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -46,7 +44,21 @@ elseif(WIN32)
   target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-2017MD$<$<CONFIG:DEBUG>:d>)
 else()
   target_link_directories(${PROJECT_NAME} PRIVATE sdk/Lib/linux${BITS})
-  target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-cpp11 dl)
+  target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDKPIC-cpp11 dl)
+  if(CMAKE_CXX_COMPILER_ID MATCHES Clang)
+    string(FIND "${CMAKE_CXX_FLAGS}" "-stdlib=libc++" HAS_LIBCXX)
+    message("R3D HAS_LIBCXX: ${HAS_LIBCXX}. CMAKE_SYSROOT: ${CMAKE_SYSROOT}")
+    if(HAS_LIBCXX GREATER_EQUAL 0)
+      set_property(SOURCE R3DCxxAbi.cpp APPEND PROPERTY COMPILE_FLAGS "-stdlib=libstdc++")
+      file(GLOB_RECURSE GNUSTL_SOS LIST_DIRECTORIES false "${CMAKE_SYSROOT}/usr/lib/gcc/x86_64-linux-gnu/*/libstdc++.so") # we only build x64
+      if(GNUSTL_SOS)
+        list(GET GNUSTL_SOS -1 GNUSTL_SO)
+        message("R3D GNUSTL_SO: ${GNUSTL_SO}")
+        #target_link_libraries(${PROJECT_NAME} PRIVATE ${GNUSTL_SO}) # will convert libstdc++ path to -lstdc++
+        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${GNUSTL_SO}")
+      endif()
+    endif()
+  endif()
 endif()
 
 setup_mdk_plugin(${PROJECT_NAME})
