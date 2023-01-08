@@ -2,6 +2,7 @@
  * Copyright (c) 2023 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
+// macOS can build arm64+x86_64 at the same time, but r3d sdk only supports x64, so must exclude arm64 by macro
 #if defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || /*vc*/defined(_M_X64) || defined(_M_AMD64)
 # define HAS_R3D 1
 #elif defined(__i386) || defined(__i386__) || /*vc*/defined(_M_IX86)
@@ -74,7 +75,6 @@ private:
     future<void> unload_fut_;
     unique_ptr<R3DSDK::Clip> clip_;
     R3DSDK::R3DDecoder* dec_ = nullptr;
-    mutex job_mtx_;
     vector<R3DSDK::R3DDecodeJob*> job_;
     vector<VideoFrame> frame_; // static frame pool, reduce mem allocation
     int frame_idx_ = 0; // current frame index in pool
@@ -88,8 +88,6 @@ private:
     int64_t frames_ = 0;
     atomic<int> seeking_ = 0;
     atomic<uint64_t> index_ = 0; // for stepping frame forward/backward
-
-    NativeVideoBufferPoolRef pool_;
 };
 
 
@@ -205,8 +203,7 @@ static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
     }
 }
 
-R3DReader::R3DReader()
-    : FrameReader()
+static auto init_sdk()
 {
     string sdk_dir = ".";
     const auto v = GetGlobalOption("R3DSDK_DIR");
@@ -216,8 +213,27 @@ R3DReader::R3DReader()
         sdk_dir = *s;
     if (const auto s = getenv("R3DSDK_DIR"))
         sdk_dir = s;
-    // InitializeSdk must be called only once!
-    static const auto ret = R3DSDK::InitializeSdk(sdk_dir.data(), OPTION_RED_DECODER); // TODO: depends on decoder option, fallback to default if failed
+    // InitializeSdk again w/o FinalizeSdk will crash.
+    int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL|OPTION_RED_CUDA; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+#if (__APPLE__ + 0)
+    flags |= OPTION_RED_METAL;
+#endif
+    auto ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags); // TODO: depends on decoder option, fallback to default if failed
+    if (ret == R3DSDK::ISRedCudaLibraryNotFound) {
+        flags &= ~OPTION_RED_CUDA;
+        ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags);
+    }
+    if (ret == R3DSDK::ISRedOpenCLLibraryNotFound) {
+        flags &= ~OPTION_RED_OPENCL;
+        ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags);
+    }
+    return ret;
+}
+
+R3DReader::R3DReader()
+    : FrameReader()
+{
+    static const auto ret = init_sdk();
     init_ = ret == R3DSDK::ISInitializeOK;
     if (ret != R3DSDK::ISInitializeOK) {
         clog << "R3D InitializeSdk error: " << ret << endl;
@@ -390,18 +406,18 @@ void R3DReader::parseDecoderOptions()
 bool R3DReader::setupDecoder()
 {
     R3DSDK::R3DDecoderOptions *options = nullptr;
-	R3DSDK::R3DStatus status = R3DSDK::R3DDecoderOptions::CreateOptions(&options);
+    R3DSDK::R3DStatus status = R3DSDK::R3DDecoderOptions::CreateOptions(&options);
     if (status != R3DSDK::R3DStatus_Ok) {
         clog << "R3DDecoderOptions::CreateOptions error: " << status << endl;
         return false;
     }
     // TODO:
-	options->setMemoryPoolSize(1024);           // 1024+
-	options->setGPUMemoryPoolSize(1024);        // 1024+
-	options->setGPUConcurrentFrameCount(1);     // 1~3
-	//options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
-	options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
-	options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
+    options->setMemoryPoolSize(1024);           // 1024+
+    options->setGPUMemoryPoolSize(1024);        // 1024+
+    options->setGPUConcurrentFrameCount(1);     // 1~3
+    //options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
+    options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
+    options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
     //options->useRRXAsync(true);
 
     status = SetupCudaCLDevices(options, gpu_);
@@ -412,7 +428,7 @@ bool R3DReader::setupDecoder()
 
     status = R3DSDK::R3DDecoder::CreateDecoder(options, &dec_);
 
-	R3DSDK::R3DDecoderOptions::ReleaseOptions(options);
+    R3DSDK::R3DDecoderOptions::ReleaseOptions(options);
     if (status != R3DSDK::R3DStatus_Ok) {
         clog << "R3DDecoder::CreateDecoder error: " << status << endl;
         return false;
@@ -426,8 +442,8 @@ void R3DReader::setupDecodeJobs()
     const int simultaneousJobs = 8; // frame queue size in renderer is 4
     frame_.resize(simultaneousJobs);
     for (int i = 0; i < simultaneousJobs; ++i) {
-		R3DSDK::R3DDecodeJob *job = nullptr;
-		R3DSDK::R3DDecoder::CreateDecodeJob(&job);
+        R3DSDK::R3DDecodeJob *job = nullptr;
+        R3DSDK::R3DDecoder::CreateDecodeJob(&job);
         job->clip = clip_.get();
         job->mode = mode_;
         job->pixelType = from(format_);
@@ -442,7 +458,7 @@ void R3DReader::setupDecodeJobs()
         job->videoFrameNo = 0;
         job->videoTrackNo = 0;
         job->imageProcessingSettings = new R3DSDK::ImageProcessingSettings();
-		clip_->GetDefaultImageProcessingSettings(*(job->imageProcessingSettings));
+        clip_->GetDefaultImageProcessingSettings(*(job->imageProcessingSettings));
         job->callback = [](R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status) {
             auto data = (UserData*)job->privateData;
             data->reader->onJobComplete(job, status);
