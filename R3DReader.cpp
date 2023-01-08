@@ -75,7 +75,7 @@ private:
     int frame_idx_ = 0; // current frame index in pool
 
     int gpu_ = OPTION_RED_OPENCL;
-    PixelFormat format_ = PixelFormat::BGRA;
+    PixelFormat format_ = PixelFormat::BGRX;
     int copy_ = 1; // copy gpu resources
     R3DSDK::VideoDecodeMode mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
     uint32_t scaleToW_ = 0; // closest down scale to target width
@@ -143,7 +143,7 @@ PixelFormat to(R3DSDK::VideoPixelType fmt)
     switch (fmt) {
     case PixelType_16Bit_RGB_Planar: return PixelFormat::RGBP16;
     case PixelType_16Bit_RGB_Interleaved: return PixelFormat::RGB48; // "rgb48le" NOT RECOMMENDED! 3 channel formats are not directly supported by gpu
-    case PixelType_8Bit_BGRA_Interleaved: return PixelFormat::BGRA;
+    case PixelType_8Bit_BGRA_Interleaved: return PixelFormat::BGRX;
     //case PixelType_10Bit_DPX_MethodB: return PixelFormat::;
     //case PixelType_12Bit_BGR_Interleaved: return PixelFormat::;
     case PixelType_8Bit_BGR_Interleaved: return PixelFormat::BGR24; // ?
@@ -160,6 +160,7 @@ R3DSDK::VideoPixelType from(PixelFormat fmt)
     switch (fmt) {
     case PixelFormat::RGBP16: return PixelType_16Bit_RGB_Planar;
     case PixelFormat::RGB48: return PixelType_16Bit_RGB_Interleaved; // NOT RECOMMENDED! 3 channel formats are not directly supported by gpu
+    case PixelFormat::BGRX:
     case PixelFormat::BGRA: return PixelType_8Bit_BGRA_Interleaved;
     case PixelFormat::BGR24: return PixelType_8Bit_BGR_Interleaved;
     default:
@@ -282,9 +283,10 @@ bool R3DReader::unload()
     for (auto j : job_) {
         R3DSDK::R3DDecoder::ReleaseDecodeJob(j);
     }
+    job_.clear();
     if (dec_)
         R3DSDK::R3DDecoder::ReleaseDecoder(dec_);
-
+    dec_ = nullptr;
     clip_.reset();
     frames_ = 0;
     update(State::Stopped);
@@ -437,7 +439,7 @@ void R3DReader::setupDecodeJobs()
 		R3DSDK::R3DDecodeJob *job = nullptr;
 		R3DSDK::R3DDecoder::CreateDecodeJob(&job);
         job->clip = clip_.get();
-        job->mode = mode_; // TODO: option
+        job->mode = mode_;
         job->pixelType = from(format_);
 
         VideoFrame frame(scaleToW_, scaleToH_, format_);
