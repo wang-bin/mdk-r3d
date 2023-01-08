@@ -81,7 +81,6 @@ private:
 
     int gpu_ = OPTION_RED_OPENCL;
     PixelFormat format_ = PixelFormat::BGRX;
-    int copy_ = 1; // copy gpu resources
     R3DSDK::VideoDecodeMode mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
     uint32_t scaleToW_ = 0; // closest down scale to target width
     uint32_t scaleToH_ = 0;
@@ -197,6 +196,7 @@ static R3DSDK::VideoDecodeMode GetScaleMode(uint32_t w, uint32_t h, uint32_t W, 
 static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
 {
     switch (mode) {
+    case R3DSDK::DECODE_HALF_RES_PREMIUM:
     case R3DSDK::DECODE_HALF_RES_GOOD: return x/2;
     case R3DSDK::DECODE_QUARTER_RES_GOOD: return x/4;
     case R3DSDK::DECODE_EIGHT_RES_GOOD: return x/8;
@@ -519,13 +519,12 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         if ("auto"sv == val) { // metal > cuda > opencl > cpu
         } else if ("metal" == val) {
         } else if ("opencl" == val) {
+            gpu_ = OPTION_RED_OPENCL;
         } else if ("cuda" == val) {
+            gpu_ = OPTION_RED_CUDA;
         } else {
         }
     }
-        return;
-    case "copy"_svh:
-        copy_ = stoi(val);
         return;
     case "scale"_svh: // 1/2, 1/4, 1/8, 1/16
     case "size"_svh: { // widthxheight or width(height=width)
