@@ -11,15 +11,17 @@ if(CMAKE_PROJECT_NAME STREQUAL mdk) # build in source tree
 endif()
 
 set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/sdk" CACHE STRING "R3D SDK dir")
-
+if(NOT EXISTS ${R3DSDK}/Include/R3DSDK.h)
+  return()
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CMAKE_CXX_COMPILER_ID MATCHES GNU)
+# TODO: r3d c++ abi code build with gnu stl
+    return()
+endif()
 find_package(Threads)
 link_libraries(Threads::Threads)
 
-#include(cmake/FindMDK.cmake) # TODO: shared
-
-if(APPLE)
-  set(CMAKE_SHARED_MODULE_SUFFIX ".dylib") # default is so
-endif()
+include(cmake/FindMDK.cmake)
 
 add_library(${PROJECT_NAME} MODULE
     R3DReader.cpp
