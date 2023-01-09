@@ -284,6 +284,9 @@ bool R3DReader::load()
     duration_ = info.video[0].duration;
     frames_ = info.video[0].frames;
 
+// parameters are ready, prepare jobs here for seeking+decoding in changed(info)
+    setupDecodeJobs();
+
     changed(info); // may call seek for player.prepare(), duration_, frames_ and SetCallback() must be ready
     update(MediaStatus::Loaded);
 
@@ -291,8 +294,6 @@ bool R3DReader::load()
 
     if (state() == State::Stopped) // start with pause
         update(State::Running);
-
-    setupDecodeJobs();
 
     if (seeking_ == 0 && !readAt(0)) // prepare(pos) will seek in changed(MediaInfo)
         return false;
