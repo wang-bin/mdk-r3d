@@ -2,13 +2,6 @@
  * Copyright (c) 2023 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
-// macOS can build arm64+x86_64 at the same time, but r3d sdk only supports x64, so must exclude arm64 by macro
-#if defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || /*vc*/defined(_M_X64) || defined(_M_AMD64)
-# define HAS_R3D 1
-#elif defined(__i386) || defined(__i386__) || /*vc*/defined(_M_IX86)
-# define HAS_R3D 1
-#endif
-#if (HAS_R3D+0)
 
 #include "mdk/FrameReader.h"
 #include "mdk/MediaInfo.h"
@@ -591,4 +584,3 @@ extern "C" MDK_API int mdk_plugin_load() {
     register_framereader_r3d();
     return abiVersion();
 }
-#endif // (HAS_R3D+0)
