@@ -11,10 +11,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
-#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <string_view>
 #include <thread>
 #include "R3DSDK.h"
@@ -30,8 +30,8 @@ class R3DReader final : public FrameReader
 public:
     R3DReader();
     ~R3DReader() override {
-        if (unload_fut_.valid())
-            unload_fut_.wait();
+        if (output_thread_.joinable())
+            output_thread_.join();
         if (init_) {
             //R3DSDK::FinalizeSdk(); // FIXME: crash
         }
@@ -56,6 +56,8 @@ private:
     R3DSDK::R3DDecodeJob* getJob(size_t index);
     void onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status);
 
+    void outputLoop();
+
     struct UserData {
         R3DReader* reader = nullptr;
         uint64_t index = 0;
@@ -64,8 +66,26 @@ private:
         VideoFrame frame;
     };
 
+    void process(const UserData& data);
+
+    void push(const UserData& data) {
+        unique_lock lock(output_mtx_);
+        outputs_.push(data);
+        output_cv_.notify_one();
+    }
+
+    bool pop(UserData& data) {
+        unique_lock lock(output_mtx_);
+        if (outputs_.empty())
+            output_cv_.wait(lock);
+        if (outputs_.empty())
+            return false;
+        data = outputs_.front();
+        outputs_.pop();
+        return true;
+    }
+
     bool init_ = false;
-    future<void> unload_fut_;
     mutex job_mtx_;
     unique_ptr<R3DSDK::Clip> clip_;
     R3DSDK::R3DDecoder* dec_ = nullptr;
@@ -82,6 +102,13 @@ private:
     int64_t frames_ = 0;
     atomic<int> seeking_ = 0;
     atomic<uint64_t> index_ = 0; // for stepping frame forward/backward
+
+// need a thread to process output frames. if do it in decode job complete callback, may have dead lock when range loop starts
+    atomic<bool> output_running_ = false;
+    thread output_thread_;
+    queue<UserData> outputs_;
+    condition_variable output_cv_;
+    mutex output_mtx_;
 };
 
 
@@ -265,6 +292,12 @@ bool R3DReader::load()
     if (!setupDecoder())
         return false;
 
+    if (output_thread_.joinable())
+        output_thread_.join();
+    output_thread_ = thread([=]{
+        outputLoop();
+    });
+
     MediaEvent e{};
     e.category = "decoder.video";
     e.detail = "r3d";
@@ -303,6 +336,9 @@ bool R3DReader::load()
 
 bool R3DReader::unload()
 {
+    output_running_ = false;
+    output_cv_.notify_one();
+
     lock_guard lock(job_mtx_);
     update(MediaStatus::Unloaded);
     if (!clip_) {
@@ -321,6 +357,10 @@ bool R3DReader::unload()
     clip_.reset();
     frames_ = 0;
     update(State::Stopped);
+    { // onJobComplete() after output thread finished
+        unique_lock lock(output_mtx_);
+        outputs_ = {};
+    }
     return true;
 }
 
@@ -342,7 +382,7 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
         index = (uint64_t)clamp<int64_t>((int64_t)index_ + msec, 0, frames_ - 1);
     }
     seeking_++;
-    clog << seeking_ << " Seek to index: " << index << " from " << index_<< endl;
+    clog << seeking_ << " Seek to index: " << index << " from " << index_ << " #" << this_thread::get_id()<< endl;
     updateBufferingProgress(0);
 
     auto job = getJob(index);
@@ -358,7 +398,6 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
         job->privateData = nullptr;
         return false;
     }
-
     return true;
 }
 
@@ -488,13 +527,9 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
     auto data = (UserData*)job->privateData;
     updateBufferingProgress(100);
 
-    auto index = data->index;
-    auto seekId = data->seekId;
-    auto seekWaitFrame = data->seekWaitFrame;
-    auto frame = data->frame;
-    delete data;
-    job->privateData = nullptr;
-
+    const auto index = data->index;
+    const auto seekId = data->seekId;
+    const auto seekWaitFrame = data->seekWaitFrame;
     if (index == frames_ - 1) {
         update(MediaStatus::Loaded|MediaStatus::End); // Options::ContinueAtEnd
     }
@@ -510,6 +545,19 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
         seekComplete(duration_ * index / frames_, seekId); // may create a new seek
     }
 
+    push(*data);
+
+    delete data;
+    job->privateData = nullptr;
+
+}
+
+void R3DReader::process(const UserData& data)
+{
+    const auto index = data.index;
+    const auto seekId = data.seekId;
+    auto frame = data.frame;
+
     frame.setTimestamp(double(duration_ * index / frames_) / 1000.0);
     frame.setDuration((double)duration_/(double)frames_ / 1000.0);
     if (seekId > 0) {
@@ -519,15 +567,26 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
     if (index == frames_ - 1 && seeking_ == 0 && accepted) {
         accepted = frameAvailable(VideoFrame().setTimestamp(TimestampEOS));
         if (accepted && !test_flag(options() & Options::ContinueAtEnd)) {
-            unload_fut_ = async(launch::async, [=]{
-                unload();
-                });
+            unload();
         }
         return;
     }
     // frameAvailable() will wait in pause state, and return when seeking, do not read the next index
     if (accepted && seeking_ == 0 && state() == State::Running && test_flag(mediaStatus() & MediaStatus::Loaded)) // seeking_ > 0: new seek created by seekComplete when continuously seeking
         readAt(index + 1);
+}
+
+void R3DReader::outputLoop()
+{
+    output_running_ = true;
+    while (output_running_) {
+        UserData data;
+        if (!pop(data))
+            continue;
+        process(data);
+    }
+    unique_lock lock(output_mtx_);
+    outputs_ = {};
 }
 
 void R3DReader::onPropertyChanged(const std::string& key, const std::string& val)
