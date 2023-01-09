@@ -66,6 +66,7 @@ private:
 
     bool init_ = false;
     future<void> unload_fut_;
+    mutex job_mtx_;
     unique_ptr<R3DSDK::Clip> clip_;
     R3DSDK::R3DDecoder* dec_ = nullptr;
     vector<R3DSDK::R3DDecodeJob*> job_;
@@ -301,19 +302,21 @@ bool R3DReader::load()
 
 bool R3DReader::unload()
 {
+    lock_guard lock(job_mtx_);
     update(MediaStatus::Unloaded);
     if (!clip_) {
         update(State::Stopped);
         return false;
     }
 
+    if (dec_)
+        R3DSDK::R3DDecoder::ReleaseDecoder(dec_); // FIXME: may block here
+    dec_ = nullptr;
+
     for (auto j : job_) {
         R3DSDK::R3DDecoder::ReleaseDecodeJob(j);
     }
     job_.clear();
-    if (dec_)
-        R3DSDK::R3DDecoder::ReleaseDecoder(dec_);
-    dec_ = nullptr;
     clip_.reset();
     frames_ = 0;
     update(State::Stopped);
