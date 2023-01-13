@@ -77,6 +77,8 @@ private:
 
     bool pop(UserData& data) {
         unique_lock lock(output_mtx_);
+        if (!output_running_) // unload
+            return false;
         if (outputs_.empty())
             output_cv_.wait(lock);
         if (outputs_.empty())
@@ -347,8 +349,11 @@ bool R3DReader::load()
 
 bool R3DReader::unload()
 {
-    output_running_ = false;
-    output_cv_.notify_one();
+    {
+        scoped_lock lock(output_mtx_);
+        output_running_ = false;
+        output_cv_.notify_one();
+    }
 
     lock_guard lock(job_mtx_);
     update(MediaStatus::Unloaded);
@@ -597,6 +602,7 @@ void R3DReader::outputLoop()
     }
     unique_lock lock(output_mtx_);
     outputs_ = {};
+    clog << "R3D finish output loop" << endl;
 }
 
 void R3DReader::onPropertyChanged(const std::string& key, const std::string& val)
