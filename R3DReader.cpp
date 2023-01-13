@@ -7,6 +7,7 @@
 #include "mdk/MediaInfo.h"
 #include "mdk/VideoFrame.h"
 #include "mdk/AudioFrame.h"
+#include "base/fmt.h"
 #include "base/Hash.h"
 #include <algorithm>
 #include <atomic>
@@ -95,6 +96,7 @@ private:
 
     int gpu_ = OPTION_RED_OPENCL;
     PixelFormat format_ = PixelFormat::BGRX;
+    R3DSDK::ImagePipeline ipp_ = R3DSDK::Full_Graded;
     R3DSDK::VideoDecodeMode mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
     uint32_t scaleToW_ = 0; // closest down scale to target width
     uint32_t scaleToH_ = 0;
@@ -102,6 +104,7 @@ private:
     int64_t frames_ = 0;
     atomic<int> seeking_ = 0;
     atomic<uint64_t> index_ = 0; // for stepping frame forward/backward
+    R3DSDK::ImageProcessingSettings ipsettings_;
 
 // need a thread to process output frames. if do it in decode job complete callback, may have dead lock when range loop starts
     atomic<bool> output_running_ = false;
@@ -234,7 +237,8 @@ static auto init_sdk()
         sdk_dir = *s;
     if (const auto s = getenv("R3DSDK_DIR"))
         sdk_dir = s;
-    // InitializeSdk again w/o FinalizeSdk will crash.
+    // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
+    // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
     int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL|OPTION_RED_CUDA; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
 #if (__APPLE__ + 0)
     flags |= OPTION_RED_METAL;
@@ -309,6 +313,13 @@ bool R3DReader::load()
     }
     scaleToW_ = Scale(clip_->Width(), mode_);
     scaleToH_ = Scale(clip_->Height(), mode_);
+    clip_->GetDefaultImageProcessingSettings(ipsettings_);
+    ipsettings_.ImagePipelineMode = ipp_;
+    ipsettings_.HdrPeakNits = 1000;
+    ipsettings_.CdlEnabled = true;
+    ipsettings_.OutputToneMap = R3DSDK::ToneMap_None;
+    clog << fmt::to_string("clip ImageProcessingSettings: ImagePipelineMode=%d, ExposureAdjust=%f, CdlSaturation=%f, CdlEnabled:%d, OutputToneMap=%d, HdrPeakNits=%u"
+        , ipsettings_.ImagePipelineMode, ipsettings_.ExposureAdjust, ipsettings_.CdlSaturation, ipsettings_.CdlEnabled, ipsettings_.OutputToneMap, ipsettings_.HdrPeakNits) << endl;
 
     MediaInfo info;
     to(info, clip_.get());
@@ -493,8 +504,7 @@ void R3DReader::setupDecodeJobs()
         job->privateData = nullptr;
         job->videoFrameNo = 0;
         job->videoTrackNo = 0;
-        job->imageProcessingSettings = new R3DSDK::ImageProcessingSettings();
-        clip_->GetDefaultImageProcessingSettings(*(job->imageProcessingSettings));
+        job->imageProcessingSettings = &ipsettings_;
         job->callback = [](R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status) {
             auto data = (UserData*)job->privateData;
             data->reader->onJobComplete(job, status);
@@ -631,6 +641,14 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
             scaleToW_ = strtoul(val.data(), nullptr, 10);
             scaleToH_ = scaleToW_;
         }
+    }
+        return;
+    case "ipp"_svh:
+    case "imagepipeline"_svh: {
+        if (val.find("primary") != string::npos)
+            ipp_ = R3DSDK::Primary_Development_Only;
+        else
+            ipp_ = R3DSDK::Full_Graded;
     }
         return;
     }
