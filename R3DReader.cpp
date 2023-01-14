@@ -2,11 +2,11 @@
  * Copyright (c) 2023 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
-
 #include "mdk/FrameReader.h"
 #include "mdk/MediaInfo.h"
 #include "mdk/VideoFrame.h"
 #include "mdk/AudioFrame.h"
+#include "base/ByteArray.h"
 #include "base/fmt.h"
 #include "base/Hash.h"
 #include <algorithm>
@@ -21,6 +21,7 @@
 #include "R3DSDK.h"
 #include "R3DSDKDecoder.h"
 #include "R3DCxxAbi.h"
+#include "Debayer.h"
 
 using namespace std;
 
@@ -29,6 +30,12 @@ MDK_NS_BEGIN
 class R3DReader final : public FrameReader
 {
 public:
+    enum Decompress {
+        R3D,
+        Async,
+        Gpu,
+    };
+
     R3DReader();
     ~R3DReader() override {
         if (output_thread_.joinable())
@@ -49,13 +56,16 @@ public:
 protected:
     void onPropertyChanged(const std::string& /*key*/, const std::string& /*value*/) override;
 private:
-    bool readAt(uint64_t index);
+    bool readAt(uint64_t index, int seekId = -1, SeekFlag flag = SeekFlag::Default);
     void parseDecoderOptions();
     bool setupDecoder();
     void setupDecodeJobs();
 
     R3DSDK::R3DDecodeJob* getJob(size_t index);
     void onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status);
+
+    R3DSDK::AsyncDecompressJob* getDecompressJob(size_t index);
+    void onJobComplete(R3DSDK::AsyncDecompressJob *job, R3DSDK::DecodeStatus status);
 
     void outputLoop();
 
@@ -65,6 +75,8 @@ private:
         int seekId = 0;
         bool seekWaitFrame = true;
         VideoFrame frame;
+        size_t decompressIndex = 0;
+        void* debayerJob = nullptr;
     };
 
     void process(const UserData& data);
@@ -96,7 +108,8 @@ private:
     vector<VideoFrame> frame_; // static frame pool, reduce mem allocation
     int frame_idx_ = 0; // current frame index in pool
 
-    int gpu_ = OPTION_RED_OPENCL;
+    int gpu_ = OPTION_RED_CUDA|OPTION_RED_OPENCL|OPTION_RED_METAL;
+    Decompress decompress_ = Decompress::R3D; // if not R3D, gpu_ will be set to a supported value
     PixelFormat format_ = PixelFormat::BGRX;
     R3DSDK::ImagePipeline ipp_ = R3DSDK::Full_Graded;
     R3DSDK::VideoDecodeMode mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
@@ -107,6 +120,12 @@ private:
     atomic<int> seeking_ = 0;
     atomic<uint64_t> index_ = 0; // for stepping frame forward/backward
     R3DSDK::ImageProcessingSettings ipsettings_;
+
+    vector<R3DSDK::AsyncDecompressJob*> decompress_job_;
+    vector<ByteArray> decompress_buf_;
+    unique_ptr<R3DSDK::AsyncDecoder> async_dec_;
+    unique_ptr<R3DSDK::GpuDecoder> gpu_dec_;
+    GpuDebayer::Ptr debayer_;
 
 // need a thread to process output frames. if do it in decode job complete callback, may have dead lock when range loop starts
     atomic<bool> output_running_ = false;
@@ -361,6 +380,23 @@ bool R3DReader::unload()
         update(State::Stopped);
         return false;
     }
+    for (auto& job : decompress_job_) {
+        job->AbortDecode = true;
+    }
+    if (async_dec_) {
+        async_dec_->Close();
+        async_dec_.reset();
+    }
+    if (gpu_dec_) {
+        gpu_dec_->Close();
+        gpu_dec_.reset();
+    }
+    for (auto& job : decompress_job_) {
+        delete job;
+        job = nullptr;
+    }
+    decompress_job_.clear();
+    debayer_.reset();
 
     if (dec_)
         R3DSDK::R3DDecoder::ReleaseDecoder(dec_); // FIXME: may block here
@@ -401,20 +437,7 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
     clog << seeking_ << " Seek to index: " << index << " from " << index_ << " #" << this_thread::get_id()<< endl;
     updateBufferingProgress(0);
 
-    auto job = getJob(index);
-    if (!job)
-        return false;
-    auto data = (UserData*)job->privateData;
-    data->seekId = id;
-    //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
-    const auto status = dec_->decode(job);
-    if (status != R3DSDK::R3DStatus_Ok) {
-        clog << "decode error: " << status << endl;
-        delete data;
-        job->privateData = nullptr;
-        return false;
-    }
-    return true;
+    return readAt(index, id, flag);
 }
 
 int64_t R3DReader::buffered(int64_t* bytes, float* percent) const
@@ -422,16 +445,44 @@ int64_t R3DReader::buffered(int64_t* bytes, float* percent) const
     return 0;
 }
 
-bool R3DReader::readAt(uint64_t index)
+bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
 {
     if (!test_flag(mediaStatus(), MediaStatus::Loaded))
         return false;
     if (!clip_)
         return false;
 
+    if (decompress_ != Decompress::R3D) {
+        auto job = getDecompressJob(index);
+        if (!job)
+            return false;
+        if (seekId > 0) {
+            auto data = (UserData*)job->PrivateData;
+            data->seekId = seekId;
+            //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
+        }
+        R3DSDK::DecodeStatus status = R3DSDK::DSDecodeOK;
+        if (async_dec_) {
+            status = async_dec_->DecodeForGpuSdk(*job);
+        } else if (gpu_dec_) {
+            status = gpu_dec_->DecodeForGpuSdk(*job);
+        }
+        if (status != R3DSDK::DSDecodeOK) {
+            clog << "decompress error: " << status << endl;
+            delete (UserData*)job->PrivateData;
+            job->PrivateData = nullptr;
+            return false;
+        }
+        return true;
+    }
     auto job = getJob(index);
     if (!job)
         return false;
+    if (seekId > 0) {
+        auto data = (UserData*)job->privateData;
+        data->seekId = seekId;
+        //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
+    }
     const auto status = dec_->decode(job);
     if (status != R3DSDK::R3DStatus_Ok) {
         clog << "decode error: " << status << endl;
@@ -457,6 +508,37 @@ void R3DReader::parseDecoderOptions()
 
 bool R3DReader::setupDecoder()
 {
+    if (decompress_ == Decompress::R3D) {
+        if (gpu_ & OPTION_RED_METAL)
+            gpu_ &= ~OPTION_RED_METAL;
+#if (__APPLE__ + 0)
+        if (gpu_ & OPTION_RED_CUDA)
+            gpu_ &= ~OPTION_RED_CUDA;
+#endif
+    }
+
+    if (decompress_ != Decompress::R3D) {
+        debayer_ = GpuDebayer::create(gpu_);
+    }
+    if (decompress_ == Decompress::Gpu) {
+        if (auto ret = R3DSDK::GpuDecoder::DecodeSupportedForClip(*clip_.get()); ret != R3DSDK::DSDecodeOK) {
+            clog << ret << " R3DSDK::GpuDecoder does not support current clip, fallback to AsyncDecoder" << endl;
+            decompress_ = Decompress::Async;
+        } else {
+            gpu_dec_ = make_unique<R3DSDK::GpuDecoder>();
+            gpu_dec_->Open();
+            return true;
+        }
+    }
+    if (decompress_ == Decompress::Async) {
+        async_dec_ = make_unique<R3DSDK::AsyncDecoder>();
+        async_dec_->Open();
+        return true;
+    }
+
+    if (gpu_ == OPTION_RED_NONE)
+        gpu_ = OPTION_RED_OPENCL;
+
     R3DSDK::R3DDecoderOptions *options = nullptr;
     R3DSDK::R3DStatus status = R3DSDK::R3DDecoderOptions::CreateOptions(&options);
     if (status != R3DSDK::R3DStatus_Ok) {
@@ -470,7 +552,7 @@ bool R3DReader::setupDecoder()
     //options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
     options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
     options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
-    //options->useRRXAsync(true);
+    options->useRRXAsync(true);
 
     status = SetupCudaCLDevices(options, gpu_);
     if (status != R3DSDK::R3DStatus_Ok) {
@@ -492,6 +574,37 @@ bool R3DReader::setupDecoder()
 void R3DReader::setupDecodeJobs()
 {
     const int simultaneousJobs = 8; // frame queue size in renderer is 4
+    if (decompress_ != Decompress::R3D) {
+        decompress_buf_.resize(simultaneousJobs);
+        for (int i = 0; i < simultaneousJobs; ++i) {
+            auto job = new R3DSDK::AsyncDecompressJob();
+            job->Clip = clip_.get();
+            job->Mode = mode_;
+            job->VideoFrameNo = 0;
+            job->VideoTrackNo = 0;
+            job->AbortDecode = false;
+            size_t outSize = 0;
+            if (decompress_ == Decompress::Async) {
+                outSize = R3DSDK::AsyncDecoder::GetSizeBufferNeeded(*job);
+            } else {
+                outSize = R3DSDK::GpuDecoder::GetSizeBufferNeeded(*job);
+            }
+            if (outSize == 0) {
+                clog << "Failed to get decompress job output buffer size" << endl;
+                return;
+            }
+            decompress_buf_[i] = ByteArray(outSize);
+            job->OutputBuffer = decompress_buf_[i].data();
+            job->OutputBufferSize = outSize;
+            job->Callback = [](R3DSDK::AsyncDecompressJob* job, R3DSDK::DecodeStatus decodeStatus) {
+                auto data = (UserData*)job->PrivateData;
+                data->reader->onJobComplete(job, decodeStatus);
+            };
+            decompress_job_.push_back(job);
+        }
+        return;
+    }
+
     frame_.resize(simultaneousJobs);
     for (int i = 0; i < simultaneousJobs; ++i) {
         R3DSDK::R3DDecodeJob *job = nullptr;
@@ -540,6 +653,10 @@ R3DSDK::R3DDecodeJob* R3DReader::getJob(size_t index)
 void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus status)
 {
     auto data = (UserData*)job->privateData;
+    if (status != R3DSDK::R3DStatus_Ok) {
+
+    }
+
     updateBufferingProgress(100);
 
     const auto index = data->index;
@@ -552,11 +669,6 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
     index_ = index; // update index_ before seekComplete because pending seek may be executed in seekCompleted
     if (seekId > 0 && seekWaitFrame) {
         seeking_--;
-        if (seeking_ > 0 && seekId == 0) {
-            seekComplete(duration_ * index / frames_, seekId); // may create a new seek
-            clog << "onJobComplete drop @" << index << endl;
-            return;
-        }
         seekComplete(duration_ * index / frames_, seekId); // may create a new seek
     }
 
@@ -567,11 +679,77 @@ void R3DReader::onJobComplete(R3DSDK::R3DDecodeJob *job, R3DSDK::R3DStatus statu
 
 }
 
+R3DSDK::AsyncDecompressJob* R3DReader::getDecompressJob(size_t index)
+{
+    for (size_t i = 0; i < decompress_job_.size(); ++i) {
+        auto n = (i + frame_idx_) % decompress_job_.size();
+        auto j = decompress_job_[n];
+        if (!j->PrivateData) {
+            j->VideoFrameNo = index;
+            auto data = new UserData();
+            data->reader = this;
+            data->index = index;
+            data->decompressIndex = n;
+            j->PrivateData = data;
+            frame_idx_++;
+            return j;
+        }
+    }
+    return nullptr;
+}
+
+void R3DReader::onJobComplete(R3DSDK::AsyncDecompressJob *job, R3DSDK::DecodeStatus status)
+{
+    auto data = (UserData*)job->PrivateData;
+    const auto index = data->index;
+    const auto seekId = data->seekId;
+    const auto seekWaitFrame = data->seekWaitFrame;
+    const auto bufIdx = data->decompressIndex;
+    job->PrivateData = nullptr; // TODO: when debayer done
+    if (status != R3DSDK::DSDecodeOK) { // abort by user
+        clog << "Decompress error: " << status << endl;
+        delete data;
+        return;
+    }
+    if (index == frames_ - 1) {
+        update(MediaStatus::Loaded|MediaStatus::End); // Options::ContinueAtEnd
+    }
+
+    index_ = index; // update index_ before seekComplete because pending seek may be executed in seekCompleted
+    if (seekId > 0 && seekWaitFrame) {
+        seeking_--;
+        seekComplete(duration_ * index / frames_, seekId); // may create a new seek
+    }
+
+    auto debayerJob = debayer_->createJob(decompress_buf_[bufIdx].constData(), decompress_buf_[bufIdx].size(), scaleToW_, scaleToH_, mode_, from(format_), &ipsettings_);
+    if (!debayerJob) {
+        clog << "Failed to create a debayer job" << endl;
+        delete data;
+        return;
+    }
+    debayer_->submit(debayerJob);
+
+    data->debayerJob = debayerJob;
+    push(*data);
+
+    delete data;
+
+    //readAt(index + 1); // TODO:
+}
+
 void R3DReader::process(const UserData& data)
 {
+    VideoFrame frame;
+    if (data.debayerJob) {
+        lock_guard lock(job_mtx_); // debayer_ reset in unload() after wait done
+        frame = debayer_->wait(data.debayerJob);
+        debayer_->releaseJob(data.debayerJob);
+    } else {
+        frame = data.frame;
+    }
+
     const auto index = data.index;
     const auto seekId = data.seekId;
-    auto frame = data.frame;
 
     frame.setTimestamp(double(duration_ * index / frames_) / 1000.0);
     frame.setDuration((double)duration_/(double)frames_ / 1000.0);
@@ -585,6 +763,9 @@ void R3DReader::process(const UserData& data)
             unload();
         }
         return;
+    }
+    if (decompress_ != Decompress::R3D) {
+        //return;
     }
     // frameAvailable() will wait in pause state, and return when seeking, do not read the next index
     if (accepted && seeking_ == 0 && state() == State::Running && test_flag(mediaStatus() & MediaStatus::Loaded)) // seeking_ > 0: new seek created by seekComplete when continuously seeking
@@ -614,12 +795,15 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         return;
     case "gpu"_svh: {
         if ("auto"sv == val) { // metal > cuda > opencl > cpu
+            gpu_ = OPTION_RED_CUDA|OPTION_RED_OPENCL|OPTION_RED_METAL;
         } else if ("metal" == val) {
+            gpu_ = OPTION_RED_METAL;
         } else if ("opencl" == val) {
             gpu_ = OPTION_RED_OPENCL;
         } else if ("cuda" == val) {
             gpu_ = OPTION_RED_CUDA;
         } else {
+            gpu_ = OPTION_RED_NONE;
         }
     }
         return;
@@ -650,11 +834,21 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
     }
         return;
     case "ipp"_svh:
-    case "imagepipeline"_svh: {
+    case "image_pipeline"_svh: {
         if (val.find("primary") != string::npos)
             ipp_ = R3DSDK::Primary_Development_Only;
         else
             ipp_ = R3DSDK::Full_Graded;
+    }
+        return;
+    case "decompress"_svh: {
+        // gpu(4GB gpu vram, fallback to async/r3d if not supported DecodeSupportedForClip), async, r3d, rocket
+        if (val == "async")
+            decompress_ = Decompress::Async;
+        else if (val == "gpu")
+            decompress_ = Decompress::Gpu;
+        else
+            decompress_ = Decompress::R3D;
     }
         return;
     }

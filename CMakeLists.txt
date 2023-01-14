@@ -24,6 +24,7 @@ include(cmake/FindMDK.cmake)
 add_library(${PROJECT_NAME} MODULE
     R3DReader.cpp
     R3DCxxAbi.cpp
+    Debayer.cpp
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
