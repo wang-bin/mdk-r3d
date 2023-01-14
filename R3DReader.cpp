@@ -49,7 +49,7 @@ public:
 protected:
     void onPropertyChanged(const std::string& /*key*/, const std::string& /*value*/) override;
 private:
-    bool readAt(uint64_t index);
+    bool readAt(uint64_t index, int seekId = -1, SeekFlag flag = SeekFlag::Default);
     void parseDecoderOptions();
     bool setupDecoder();
     void setupDecodeJobs();
@@ -401,20 +401,7 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
     clog << seeking_ << " Seek to index: " << index << " from " << index_ << " #" << this_thread::get_id()<< endl;
     updateBufferingProgress(0);
 
-    auto job = getJob(index);
-    if (!job)
-        return false;
-    auto data = (UserData*)job->privateData;
-    data->seekId = id;
-    //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
-    const auto status = dec_->decode(job);
-    if (status != R3DSDK::R3DStatus_Ok) {
-        clog << "decode error: " << status << endl;
-        delete data;
-        job->privateData = nullptr;
-        return false;
-    }
-    return true;
+    return readAt(index, id, flag);
 }
 
 int64_t R3DReader::buffered(int64_t* bytes, float* percent) const
@@ -422,7 +409,7 @@ int64_t R3DReader::buffered(int64_t* bytes, float* percent) const
     return 0;
 }
 
-bool R3DReader::readAt(uint64_t index)
+bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
 {
     if (!test_flag(mediaStatus(), MediaStatus::Loaded))
         return false;
@@ -432,6 +419,11 @@ bool R3DReader::readAt(uint64_t index)
     auto job = getJob(index);
     if (!job)
         return false;
+    if (seekId > 0) {
+        auto data = (UserData*)job->privateData;
+        data->seekId = seekId;
+        //data->seekWaitFrame = !test_flag(flag & SeekFlag::IOCompleteCallback); // FIXME:
+    }
     const auto status = dec_->decode(job);
     if (status != R3DSDK::R3DStatus_Ok) {
         clog << "decode error: " << status << endl;
@@ -470,7 +462,7 @@ bool R3DReader::setupDecoder()
     //options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
     options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
     options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
-    //options->useRRXAsync(true);
+    options->useRRXAsync(true);
 
     status = SetupCudaCLDevices(options, gpu_);
     if (status != R3DSDK::R3DStatus_Ok) {
