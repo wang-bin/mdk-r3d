@@ -59,13 +59,21 @@ void* MetalDebayer::createJob(const void *hostMemInput, size_t hostMemSize, int 
     job->imageProcessingSettings = ips;
     job->batchMode = false;
     // TODO: reuse mtl buffer, texture
-    auto buf = [dev_ newBufferWithBytes:hostMemInput length:hostMemSize options:MTLResourceStorageModeShared];
+    auto buf = [dev_ newBufferWithBytes:hostMemInput length:hostMemSize options:MTLResourceStorageModeManaged];
     //[buf didModifyRange:NSMakeRange(0, hostMemSize)]; // if managed storage
     job->raw_device_mem = buf;
     // seems BGRA does not work
     auto fmt = MTLPixelFormatBGRA8Unorm;
-    if (pix == R3DSDK::PixelType_16Bit_RGB_Interleaved) {
+    switch (pix) {
+    case R3DSDK::PixelType_16Bit_RGB_Interleaved:
         fmt = MTLPixelFormatRGBA16Uint;
+        break;
+    case R3DSDK::PixelType_HalfFloat_RGB_Interleaved:
+    case R3DSDK::PixelType_HalfFloat_RGB_ACES_Int:
+        fmt = MTLPixelFormatRGBA16Float;
+        break;
+    default:
+        break;
     }
     auto desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:width height:height mipmapped:false];
     desc.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
@@ -80,6 +88,7 @@ PixelFormat format(MTLPixelFormat mfmt)
     case MTLPixelFormatBGRA8Unorm: return PixelFormat::BGRA;
     case MTLPixelFormatRGBA8Unorm: return PixelFormat::RGBA;
     case MTLPixelFormatRGBA16Uint: return PixelFormat::RGBA64;
+    case MTLPixelFormatRGBA16Float: return PixelFormat::RGBAF16LE;
     default: return PixelFormat::Unknown;
     }
 }
@@ -88,10 +97,44 @@ VideoFrame MetalDebayer::wait(void* job)
 {
     auto mtljob = (R3DSDK::DebayerMetalJob*)job;
     mtljob->completeAsync();
+    class MetalVideoBuffer final : public NativeVideoBuffer {
+        id<MTLTexture> tex_;
+        MetalTextures mta_{};
+        MemoryArray ma_{};
+        VideoFrame frame_;
+    public:
+        MetalVideoBuffer(id<MTLTexture> tex) : tex_(tex) {}
+
+        void* map(Type type, MapParameter* mp) override {
+            mp->width[0] = (int)tex_.width;
+            mp->height[0] = (int)tex_.height;
+            mp->format = format(tex_.pixelFormat);
+            if (type == HostMemory) {
+                if (!ma_.data[0]) {
+                    frame_ = VideoFrame(mp->width[0], mp->height[0], mp->format);
+                    frame_.setBuffers(nullptr);
+                    ma_.data[0] = frame_.buffer(0)->data();
+                    mp->stride[0] = (int)frame_.buffer(0)->stride();
+                    [tex_ getBytes:ma_.data[0] bytesPerRow:mp->stride[0] fromRegion:MTLRegionMake2D(0, 0, mp->width[0], mp->height[0]) mipmapLevel:0];
+                }
+                return &ma_;
+            }
+            if (type != MetalTexture)
+                return nullptr;
+            if (!mta_.tex[0]) {
+                mta_.tex[0] = (__bridge void*)tex_;
+            }
+            return &mta_;
+        }
+    };
     auto tex = mtljob->output_device_image;
     VideoFrame frame((int)tex.width, (int)tex.height, format(tex.pixelFormat));
     frame.setBuffers(nullptr);
-    [tex getBytes:frame.buffer(0)->data() bytesPerRow:frame.buffer()->stride() fromRegion:MTLRegionMake2D(0, 0, frame.width(), frame.height()) mipmapLevel:0];
+    if (tex.pixelFormat == MTLPixelFormatRGBA16Uint) { // not filterable
+        [tex getBytes:frame.buffer(0)->data() bytesPerRow:frame.buffer()->stride() fromRegion:MTLRegionMake2D(0, 0, frame.width(), frame.height()) mipmapLevel:0];
+    } else {
+        frame.setNativeBuffer(make_shared<MetalVideoBuffer>(tex));
+    }
     return frame;
 }
 

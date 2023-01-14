@@ -195,11 +195,11 @@ PixelFormat to(R3DSDK::VideoPixelType fmt)
     case PixelType_16Bit_RGB_Planar: return PixelFormat::RGBP16;
     case PixelType_16Bit_RGB_Interleaved: return PixelFormat::RGB48; // "rgb48le" NOT RECOMMENDED! 3 channel formats are not directly supported by gpu
     case PixelType_8Bit_BGRA_Interleaved: return PixelFormat::BGRX;
-    //case PixelType_10Bit_DPX_MethodB: return PixelFormat::;
+    //case PixelType_10Bit_DPX_MethodB: return PixelFormat::X2RGB10;
     //case PixelType_12Bit_BGR_Interleaved: return PixelFormat::;
     case PixelType_8Bit_BGR_Interleaved: return PixelFormat::BGR24; // ?
-    //case PixelType_HalfFloat_RGB_Interleaved: return PixelFormat::RGBF16;
-    //case PixelType_HalfFloat_RGB_ACES_Int: return PixelFormat::RGBF16;
+    case PixelType_HalfFloat_RGB_Interleaved: return PixelFormat::RGBF16LE;
+    case PixelType_HalfFloat_RGB_ACES_Int: return PixelFormat::RGBF16;
     default:
         return PixelFormat::Unknown;
     }
@@ -211,9 +211,11 @@ R3DSDK::VideoPixelType from(PixelFormat fmt)
     switch (fmt) {
     case PixelFormat::RGBP16: return PixelType_16Bit_RGB_Planar;
     case PixelFormat::RGB48: return PixelType_16Bit_RGB_Interleaved; // NOT RECOMMENDED! 3 channel formats are not directly supported by gpu
+    //case PixelFormat::X2RGB10: return PixelType_10Bit_DPX_MethodB;
     case PixelFormat::BGRX:
     case PixelFormat::BGRA: return PixelType_8Bit_BGRA_Interleaved;
     case PixelFormat::BGR24: return PixelType_8Bit_BGR_Interleaved;
+    case PixelFormat::RGBF16LE: return PixelType_HalfFloat_RGB_Interleaved;
     default:
         return PixelType_8Bit_BGRA_Interleaved;
     }
