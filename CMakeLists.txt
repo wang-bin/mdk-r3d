@@ -24,8 +24,11 @@ include(cmake/FindMDK.cmake)
 add_library(${PROJECT_NAME} MODULE
     R3DReader.cpp
     R3DCxxAbi.cpp
+    Debayer.cpp
 )
-
+if(APPLE)
+  target_sources(${PROJECT_NAME} PRIVATE MetalDebayer.mm)
+endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES
     #VERSION ${PROJECT_VERSION} # -current_version can not be applied for MODULE
     SOVERSION ${PROJECT_VERSION_MAJOR}
@@ -38,7 +41,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 math(EXPR BITS "8 * ${CMAKE_SIZEOF_VOID_P}")
 if(APPLE)
   target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/mac64)
-  target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-libcpp)
+  target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-libcpp "-framework Metal" "-framework CoreGraphics" "-framework CoreFoundation")
   # set rpath
 elseif(WIN32)
   target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/win${BITS})

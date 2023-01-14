@@ -32,7 +32,7 @@ char* MetadataItemAsString(const R3DSDK::Clip* clip, size_t index)
 R3DSDK::R3DStatus SetupCudaCLDevices(R3DSDK::R3DDecoderOptions* opts, int type)
 {
     auto status = R3DSDK::R3DStatus_Ok;
-    if (type == OPTION_RED_OPENCL) {
+    if (type & OPTION_RED_OPENCL) {
         vector<R3DSDK::OpenCLDeviceInfo> devs;
 		status = opts->GetOpenCLDeviceList(devs);
         if (status != R3DSDK::R3DStatus_Ok)
@@ -42,7 +42,7 @@ R3DSDK::R3DStatus SetupCudaCLDevices(R3DSDK::R3DDecoderOptions* opts, int type)
         for (const auto& i : devs) {
             status = opts->useDevice(i);
         }
-    } else if (type == OPTION_RED_CUDA) {
+    } else if (type & OPTION_RED_CUDA) {
         vector<R3DSDK::CudaDeviceInfo> devs;
 		status = opts->GetCudaDeviceList(devs);
         if (status != R3DSDK::R3DStatus_Ok)
