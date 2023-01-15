@@ -13,5 +13,5 @@ https://github.com/wang-bin/mdk-sdk/wiki/Decoders#r3d
 
 
 ## TODO
-- decompress + metal/opencl/cuda debayer
+- decompress + opencl/cuda debayer
 - audio
