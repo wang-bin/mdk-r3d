@@ -56,7 +56,7 @@ public:
 
     virtual Status submit(void* job) = 0; // processAsync
 
-    virtual mdk::VideoFrame wait(void* job) = 0;
+    virtual mdk::VideoFrame wait(void* job, bool copy = false) = 0;
 
     virtual Status flush() { return Status_Ok; }
 };

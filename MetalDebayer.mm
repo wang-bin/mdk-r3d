@@ -41,7 +41,7 @@ public:
         return (GpuDebayer::Status)processAsync(cmdQ_, (R3DSDK::DebayerMetalJob*)job, err);
     }
 
-    VideoFrame wait(void* job) override;
+    VideoFrame wait(void* job, bool copy) override;
 
     GpuDebayer::Status flush() override { return GpuDebayer::Status_Ok; }
 
@@ -93,7 +93,7 @@ PixelFormat format(MTLPixelFormat mfmt)
     }
 }
 
-VideoFrame MetalDebayer::wait(void* job)
+VideoFrame MetalDebayer::wait(void* job, bool copy)
 {
     auto mtljob = (R3DSDK::DebayerMetalJob*)job;
     mtljob->completeAsync();
@@ -104,7 +104,6 @@ VideoFrame MetalDebayer::wait(void* job)
         VideoFrame frame_;
     public:
         MetalVideoBuffer(id<MTLTexture> tex) : tex_(tex) {}
-
         void* map(Type type, MapParameter* mp) override {
             mp->width[0] = (int)tex_.width;
             mp->height[0] = (int)tex_.height;
@@ -127,10 +126,11 @@ VideoFrame MetalDebayer::wait(void* job)
             return &mta_;
         }
     };
+
     auto tex = mtljob->output_device_image;
     VideoFrame frame((int)tex.width, (int)tex.height, format(tex.pixelFormat));
-    frame.setBuffers(nullptr);
-    if (tex.pixelFormat == MTLPixelFormatRGBA16Uint) { // not filterable
+    if (copy) {
+        frame.setBuffers(nullptr);
         [tex getBytes:frame.buffer(0)->data() bytesPerRow:frame.buffer()->stride() fromRegion:MTLRegionMake2D(0, 0, frame.width(), frame.height()) mipmapLevel:0];
     } else {
         frame.setNativeBuffer(make_shared<MetalVideoBuffer>(tex));
