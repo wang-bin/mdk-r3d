@@ -108,6 +108,7 @@ private:
     vector<VideoFrame> frame_; // static frame pool, reduce mem allocation
     int frame_idx_ = 0; // current frame index in pool
 
+    bool copy_ = false; // try 0-copy when possible(async/gpu decoder, not R3DDecoder)
     int gpu_ = OPTION_RED_CUDA|OPTION_RED_OPENCL|OPTION_RED_METAL;
     Decompress decompress_ = Decompress::R3D; // if not R3D, gpu_ will be set to a supported value
     PixelFormat format_ = PixelFormat::BGRX;
@@ -252,7 +253,7 @@ static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
 
 static auto init_sdk()
 {
-    string sdk_dir = ".";
+    string sdk_dir = "."; // TODO: default is Framework/Plugins dir, dll dir, so dir
     const auto v = GetGlobalOption("R3DSDK_DIR");
     if (const auto s = get_if<string>(&v))
         sdk_dir = *s;
@@ -744,7 +745,7 @@ void R3DReader::process(const UserData& data)
     VideoFrame frame;
     if (data.debayerJob) {
         lock_guard lock(job_mtx_); // debayer_ reset in unload() after wait done
-        frame = debayer_->wait(data.debayerJob);
+        frame = debayer_->wait(data.debayerJob, copy_);
         debayer_->releaseJob(data.debayerJob);
     } else {
         frame = data.frame;
@@ -808,6 +809,9 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
             gpu_ = OPTION_RED_NONE;
         }
     }
+        return;
+    case "copy"_svh:
+        copy_ = stoi(val) > 0;
         return;
     case "scale"_svh: // 1/2, 1/4, 1/8, 1/16
     case "size"_svh: { // widthxheight or width(height=width)
