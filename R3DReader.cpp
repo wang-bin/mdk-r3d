@@ -47,7 +47,6 @@ public:
     }
 
     const char* name() const override { return "R3D"; }
-    bool isSupported(const std::string& url, MediaType type) const override;
     void setTimeout(int64_t value, TimeoutCallback cb) override {}
     bool load() override;
     bool unload() override;
@@ -300,20 +299,6 @@ R3DReader::R3DReader()
         return;
     }
     clog << R3DSDK::GetSdkVersion() << endl;
-}
-
-bool R3DReader::isSupported(const std::string& url, MediaType type) const
-{
-    if (url.empty())
-        return true;
-    auto dot = url.rfind('.');
-    if (dot == string::npos)
-        return true;
-    string s = url.substr(dot + 1);
-    transform(s.begin(), s.end(), s.begin(), [](unsigned char c){
-        return std::tolower(c);
-    });
-    return s == "r3d";
 }
 
 bool R3DReader::load()
@@ -926,7 +911,7 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
 
 
 void register_framereader_r3d() {
-    FrameReader::registerOnce("r3d", []{return new R3DReader();});
+    FrameReader::registerOnce("R3D", []{return new R3DReader();});
 }
 MDK_NS_END
 
