@@ -23,6 +23,9 @@
 #include "R3DCxxAbi.h"
 #include "Debayer.h"
 
+// TODO: 1 job + frame pool(mutex based)
+// TODO: safe queue
+
 using namespace std;
 
 MDK_NS_BEGIN
@@ -448,8 +451,6 @@ int64_t R3DReader::buffered(int64_t* bytes, float* percent) const
 
 bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
 {
-    if (!test_flag(mediaStatus(), MediaStatus::Loaded))
-        return false;
     if (!clip_)
         return false;
 
