@@ -1,25 +1,27 @@
 cmake_minimum_required(VERSION 3.1)
-if(POLICY CMP0025)
-# MUST call before project() and enable_language
-  cmake_policy(SET CMP0025 NEW) # since 3.0, prefer AppleClang instead of Clang.
-endif()
 
 project(mdk-r3d VERSION 0.19.0 DESCRIPTION "mdk r3d plugin")
 set(PROJECT_VERSION_TWEAK 0)
-if(CMAKE_PROJECT_NAME STREQUAL mdk) # build in source tree
-    include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR})
-endif()
 
-set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/sdk" CACHE STRING "R3D SDK dir")
+set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/r3dsdk" CACHE STRING "R3D SDK dir")
+set(MDKSDK "${CMAKE_CURRENT_SOURCE_DIR}/mdk-sdk" CACHE STRING "libmdk SDK dir")
+
+if(NOT CMAKE_PROJECT_NAME STREQUAL mdk) # not build in source tree
+  list(APPEND CMAKE_MODULE_PATH ${MDKSDK}/lib/cmake)
+endif()
+find_package(MDK)
+
 if(NOT EXISTS ${R3DSDK}/Include/R3DSDK.h)
+  message(FATAL_ERROR "R3DSDK.h not found in ${R3DSDK}/Include")
   return()
 endif()
 message("Build with R3DSDK: ${R3DSDK}")
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Threads)
 link_libraries(Threads::Threads)
 
-include(cmake/FindMDK.cmake)
 
 add_library(${PROJECT_NAME} MODULE
     R3DReader.cpp
@@ -44,7 +46,7 @@ if(APPLE)
   target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-libcpp "-framework Metal" "-framework CoreGraphics" "-framework CoreFoundation")
   # set rpath
 elseif(WIN32)
-  target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/win${BITS})
+  target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/win${BITS}) #TODO: MT
   target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-2017MD$<$<CONFIG:DEBUG>:d>)
 else()
   target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/linux${BITS})
