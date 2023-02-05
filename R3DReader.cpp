@@ -7,11 +7,12 @@
 #include "mdk/VideoFrame.h"
 #include "mdk/AudioFrame.h"
 #include "base/ByteArray.h"
-#include "base/fmt.h"
+//#include "base/fmt.h"
 #include "base/Hash.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <condition_variable>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -342,8 +343,8 @@ bool R3DReader::load()
     ipsettings_.HdrPeakNits = 1000;
     ipsettings_.CdlEnabled = true;
     ipsettings_.OutputToneMap = R3DSDK::ToneMap_None;
-    clog << fmt::to_string("clip ImageProcessingSettings: ImagePipelineMode=%d, ExposureAdjust=%f, CdlSaturation=%f, CdlEnabled:%d, OutputToneMap=%d, HdrPeakNits=%u"
-        , ipsettings_.ImagePipelineMode, ipsettings_.ExposureAdjust, ipsettings_.CdlSaturation, ipsettings_.CdlEnabled, ipsettings_.OutputToneMap, ipsettings_.HdrPeakNits) << endl;
+    //clog << fmt::to_string("clip ImageProcessingSettings: ImagePipelineMode=%d, ExposureAdjust=%f, CdlSaturation=%f, CdlEnabled:%d, OutputToneMap=%d, HdrPeakNits=%u"
+    //    , ipsettings_.ImagePipelineMode, ipsettings_.ExposureAdjust, ipsettings_.CdlSaturation, ipsettings_.CdlEnabled, ipsettings_.OutputToneMap, ipsettings_.HdrPeakNits) << endl;
 
     MediaInfo info;
     to(info, clip_.get());
