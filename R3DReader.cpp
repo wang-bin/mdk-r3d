@@ -248,7 +248,7 @@ static R3DSDK::VideoDecodeMode GetScaleMode(uint32_t w, uint32_t h, uint32_t W, 
     if (scale >= 3.0f) // (4+2)/2
         return R3DSDK::DECODE_QUARTER_RES_GOOD;
     if (scale >= 1.5f) // (2+1)/2
-        return R3DSDK::DECODE_HALF_RES_GOOD;
+        return R3DSDK::DECODE_HALF_RES_PREMIUM;
     // DECODE_ROCKET_CUSTOM_RES for rocket?
     return R3DSDK::DECODE_FULL_RES_PREMIUM;
 }
@@ -875,7 +875,7 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
             if (s && s[0] == '/')
                 x = strtoul(s + 1, nullptr, 10);
             if (x == 2)
-                mode_ = R3DSDK::DECODE_HALF_RES_GOOD;
+                mode_ = R3DSDK::DECODE_HALF_RES_PREMIUM;
             else if (x == 4)
                 mode_ = R3DSDK::DECODE_QUARTER_RES_GOOD;
             else if (x == 8)
