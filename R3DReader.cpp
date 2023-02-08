@@ -23,6 +23,9 @@
 #include "R3DSDKDecoder.h"
 #include "R3DCxxAbi.h"
 #include "Debayer.h"
+#if (__APPLE__ + 0) || (__linux__ + 0)
+#include <sys/resource.h>
+#endif
 
 // TODO: 1 job + frame pool(mutex based)
 // TODO: safe queue
@@ -267,6 +270,22 @@ static uint32_t Scale(uint32_t x, R3DSDK::VideoDecodeMode mode)
 
 static auto init_sdk()
 {
+#if (__APPLE__ + 0) || (__linux__ + 0)
+    // Increase open file limit, because R3D decoder opens /dev/urandom
+    // per each thread, and this crashes on Macbook M1 Max
+    struct rlimit limit;
+    if (::getrlimit(RLIMIT_NOFILE, &limit) == 0) {
+        if (limit.rlim_cur < 4096) {
+            limit.rlim_cur = 4096;
+            if (limit.rlim_max < 4096)
+                limit.rlim_max = 4096;
+            if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+                clog << "Failed to set RLIMIT_NOFILE to 4096!" << endl;
+            }
+        }
+    }
+#endif
+
     string sdk_dir = "."; // TODO: default is Framework/Plugins dir, dll dir, so dir
     const auto v = GetGlobalOption("R3DSDK_DIR");
     if (const auto s = get_if<string>(&v))
@@ -567,8 +586,8 @@ bool R3DReader::setupDecoder()
         return false;
     }
     // TODO:
-    options->setMemoryPoolSize(1024);           // 1024+
-    options->setGPUMemoryPoolSize(1024);        // 1024+
+    options->setMemoryPoolSize(4096);           // 1024+
+    options->setGPUMemoryPoolSize(4096);        // 1024+
     options->setGPUConcurrentFrameCount(1);     // 1~3
     //options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
     options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
