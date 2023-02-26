@@ -6,9 +6,13 @@
 #include "mdk/MediaInfo.h"
 #include "mdk/VideoFrame.h"
 #include "mdk/AudioFrame.h"
-#include "base/ByteArray.h"
-//#include "base/fmt.h"
+#include "mdk/AudioDecoder.h"
+#include "mdk/Packet.h"
+//#include "base/ByteArray.h"
+#include "base/ByteArrayBuffer.h"
+#include "base/fmt.h"
 #include "base/Hash.h"
+#include "MPMCQueue.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -34,6 +38,8 @@ using namespace std;
 
 MDK_NS_BEGIN
 
+constexpr uint16_t kAudioAlign = 512;
+
 class R3DReader final : public FrameReader
 {
 public:
@@ -48,6 +54,8 @@ public:
     ~R3DReader() override {
         if (output_thread_.joinable())
             output_thread_.join();
+        if (audio_thread_.joinable())
+            audio_thread_.join();
         if (init_) {
             //R3DSDK::FinalizeSdk(); // FIXME: crash
         }
@@ -64,6 +72,9 @@ protected:
     void onPropertyChanged(const std::string& /*key*/, const std::string& /*value*/) override;
 private:
     bool readAt(uint64_t index, int seekId = -1, SeekFlag flag = SeekFlag::Default);
+    void readAudioAt(size_t index, int seekId = -1);
+
+    void setupAudio(const AudioCodecParameters& par);
     void parseDecoderOptions();
     bool setupDecoder();
     void setupDecodeJobs();
@@ -74,6 +85,7 @@ private:
     R3DSDK::AsyncDecompressJob* getDecompressJob(size_t index);
     void onJobComplete(R3DSDK::AsyncDecompressJob *job, R3DSDK::DecodeStatus status);
 
+    void audioLoop();
     void outputLoop();
 
     struct UserData {
@@ -151,6 +163,15 @@ private:
     queue<UserData> outputs_;
     condition_variable output_cv_;
     mutex output_mtx_;
+
+    size_t audio_block_size_ = 0;
+    size_t audio_blocks_ = 0;
+    uint64_t audio_block_duration_ms_ = 0;
+    atomic<int> audio_seeking_ = 0;
+    ByteArray audio_buf_;
+    AudioDecoder::Ptr adec_; // decode s24 be to s32 native
+    MPMCQueue<function<void()>> audio_tasks_; // at most 1 in the queue
+    thread audio_thread_;
 };
 
 
@@ -191,8 +212,11 @@ void to(MediaInfo& info, const R3DSDK::Clip* clip)
     AudioCodecParameters acp;
     AudioStreamInfo asi;
     asi.index = 1;
-    acp.codec = "pcm";
-    acp.format = AudioFormat::SampleFormat::S24; // clip->MetadataItemAsInt(RMD_SAMPLE_SIZE) is always 24
+    acp.codec = "pcm_s32be";
+    acp.block_align = 8; // why 8?
+    acp.bits_per_raw_sample = 24;
+    acp.bits_per_coded_sample = 32;
+    acp.format = AudioFormat::SampleFormat::S32; // clip->MetadataItemAsInt(RMD_SAMPLE_SIZE) is always 24
     acp.channels = clip->AudioChannelCount();
     acp.channel_layout = (uint64_t)clip->MetadataItemAsInt(R3DSDK::RMD_CHANNEL_MASK);
     acp.sample_rate = clip->MetadataItemAsInt(R3DSDK::RMD_SAMPLERATE); // always 48000
@@ -340,6 +364,8 @@ bool R3DReader::load()
         clog << "R3D will use software decoder" << endl;
     }
 
+    if (audio_thread_.joinable())
+        audio_thread_.join();
     if (output_thread_.joinable())
         output_thread_.join();
     output_thread_ = thread([=]{
@@ -374,7 +400,9 @@ bool R3DReader::load()
 
 // parameters are ready, prepare jobs here for seeking+decoding in changed(info)
     setupDecodeJobs();
-
+    audio_blocks_ = clip_->AudioBlockCountAndSize(&audio_block_size_);
+    if (audio_blocks_ > 0)
+        setupAudio(info.audio[0].codec);
     changed(info); // may call seek for player.prepare(), duration_, frames_ and SetCallback() must be ready
     update(MediaStatus::Loaded);
 
@@ -383,8 +411,12 @@ bool R3DReader::load()
     if (state() == State::Stopped) // start with pause
         update(State::Running);
 
-    if (seeking_ == 0 && !readAt(0)) // prepare(pos) will seek in changed(MediaInfo)
-        return false;
+    if (seeking_ == 0) {
+        if (adec_)
+            readAudioAt(0);
+        if (!readAt(0)) // prepare(pos) will seek in changed(MediaInfo)
+            return false;
+    }
 
     return true;
 }
@@ -395,6 +427,7 @@ bool R3DReader::unload()
         scoped_lock lock(output_mtx_);
         output_running_ = false;
         output_cv_.notify_one();
+        audio_tasks_.notifyAll();
     }
 
     lock_guard lock(job_mtx_);
@@ -460,7 +493,8 @@ bool R3DReader::seekTo(int64_t msec, SeekFlag flag, int id)
     seeking_++;
     clog << seeking_ << " Seek to index: " << index << " from " << index_ << " #" << this_thread::get_id()<< endl;
     updateBufferingProgress(0);
-
+    if (audio_block_duration_ms_ > 0)
+        readAudioAt(msec / audio_block_duration_ms_, id);
     return readAt(index, id, flag);
 }
 
@@ -529,6 +563,70 @@ bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
         return false;
     }
     return true;
+}
+
+void R3DReader::readAudioAt(size_t index, int seekId)
+{
+    if (seekId > 0) {
+        audio_tasks_.clear();
+        audio_seeking_++;
+    }
+    audio_tasks_.push([=]{
+        size_t size = audio_buf_.size();
+        if (const auto ret = clip_->DecodeAudioBlock(index, audio_buf_.data(), &size); ret != R3DSDK::DSDecodeOK) {
+            clog << "DecodeAudioBlock error: " << ret << endl;
+            return;
+        }
+        if (seekId > 0) {
+            audio_seeking_--;
+            audio_tasks_.clear(); // read index + 1 before seek
+        }
+        if (audio_seeking_ > 0)
+            return;
+        const auto pts = index * audio_block_duration_ms_ / 1000.0;
+        Packet pkt;
+        pkt.type = MediaType::Audio;
+        pkt.duration = 0;   // default -1 is an invalid packet
+        pkt.hasKeyFrame = true;
+        pkt.pts = pkt.dts = pts;
+        pkt.buffer = make_shared<ByteArrayBuffer>(size, audio_buf_.constData());
+        if (adec_->decode(pkt) < 0) {
+            clog << "audio decode error" << endl;
+            return;
+        }
+        AudioFrame frame;
+        if (adec_->take(&frame) < 0)
+            return;
+        if (seekId > 0) {
+            frameAvailable(AudioFrame(frame.format()).setTimestamp(frame.timestamp()));
+        }
+        bool accepted = frameAvailable(frame); // false: out of loop range and begin a new loop
+        if (index == audio_blocks_ - 1 && seeking_ == 0 && accepted) {
+            accepted = frameAvailable(AudioFrame().setTimestamp(TimestampEOS));
+            return;
+        }
+        // frameAvailable() will wait in pause state, and return when seeking, do not read the next index
+        if (accepted && audio_seeking_ == 0 && state() == State::Running && test_flag(mediaStatus() & MediaStatus::Loaded))
+            readAudioAt(index + 1);
+    });
+}
+
+void R3DReader::setupAudio(const AudioCodecParameters& par)
+{
+    clog << "Audio blocks: " << audio_blocks_ << ", block size: " << audio_block_size_ << endl;
+    adec_ = AudioDecoder::create();
+    adec_->set(par);
+    if (!adec_->open()) {
+        adec_.reset();
+        return;
+    }
+    audio_buf_ = ByteArray((int)audio_block_size_, kAudioAlign);
+    AudioFormat af;
+    af.setSampleFormat(par.format)
+      .setChannels(par.channels)
+      .setSampleRate(par.sample_rate);
+    audio_block_duration_ms_ = af.durationForBytes(audio_block_size_)*1000.0;
+    audio_thread_ = thread([this]{ audioLoop(); });
 }
 
 void R3DReader::parseDecoderOptions()
@@ -806,7 +904,7 @@ void R3DReader::process(const UserData& data)
     } else if (data.swJob) {
         lock_guard lock(job_mtx_);
         if (!clip_)
-            return;;
+            return;
         clip_->DecodeVideoFrame(data.index, *data.swJob);
         frame = data.frame;
         if (seekId > 0 && seekWaitFrame) {
@@ -843,6 +941,16 @@ void R3DReader::process(const UserData& data)
         readAt(index + 1);
 }
 
+void R3DReader::audioLoop()
+{
+    while (output_running_) {
+        function<void()> task;
+        if (!audio_tasks_.pop(task))
+            continue;
+        task();
+    }
+}
+
 void R3DReader::outputLoop()
 {
     output_running_ = true;
@@ -859,7 +967,7 @@ void R3DReader::outputLoop()
 
 void R3DReader::onPropertyChanged(const std::string& key, const std::string& val)
 {
-    const auto k = detail::fnv1a_32(key);
+    const auto k = detail::fnv1ah32::hash(key);
     switch (k) {
     case "format"_svh:
         format_ = VideoFormat::fromName(val.data());
