@@ -568,21 +568,30 @@ bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
 void R3DReader::readAudioAt(size_t index, int seekId)
 {
     if (seekId > 0) {
-        audio_tasks_.clear();
         audio_seeking_++;
+        // remove old decode tasks, read index + 1 before exectuting decode task by seek
+        // DO NOT clear audio_tasks_ directly, execute all to decrease audio_seeking_
+        function<void()> old;
+        while (audio_tasks_.tryPop(old))
+            old();
     }
     audio_tasks_.push([=]{
+        if (seekId > 0) {
+        // remove old decode tasks, read index + 1 before exectuting decode task by seek
+            function<void()> old;
+            while (audio_tasks_.tryPop(old))
+                old();
+            audio_seeking_--;
+            adec_->flush();
+        }
+        if (audio_seeking_ > 0)
+            return;
+
         size_t size = audio_buf_.size();
         if (const auto ret = clip_->DecodeAudioBlock(index, audio_buf_.data(), &size); ret != R3DSDK::DSDecodeOK) {
             clog << "DecodeAudioBlock error: " << ret << endl;
             return;
         }
-        if (seekId > 0) {
-            audio_seeking_--;
-            audio_tasks_.clear(); // read index + 1 before seek
-        }
-        if (audio_seeking_ > 0)
-            return;
         const auto pts = index * audio_block_duration_ms_ / 1000.0;
         Packet pkt;
         pkt.type = MediaType::Audio;
@@ -595,9 +604,12 @@ void R3DReader::readAudioAt(size_t index, int seekId)
             return;
         }
         AudioFrame frame;
-        if (adec_->take(&frame) < 0)
+        if (adec_->take(&frame) < 0) {
+            clog << "R3D NO audio decoded" << endl;
             return;
+        }
         if (seekId > 0) {
+            updateBufferingProgress(100); // unpause audio renderer
             frameAvailable(AudioFrame(frame.format()).setTimestamp(frame.timestamp()));
         }
         bool accepted = frameAvailable(frame); // false: out of loop range and begin a new loop

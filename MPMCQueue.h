@@ -15,6 +15,16 @@ public:
         cv_.notify_one();
     }
 
+    bool tryPop(T& t) {
+        std::unique_lock lock(mtx_);
+        if (q_.empty())
+            return false;
+        t = q_.front();
+        q_.pop_front();
+        return true;
+    }
+
+
     bool pop(T& t) {
         std::unique_lock lock(mtx_);
         if (q_.empty())
@@ -30,9 +40,11 @@ public:
         cv_.notify_all();
     }
 
-    void clear() {
+    auto clear() {
         std::lock_guard lock(mtx_);
+        auto n = q_.size();
         q_.clear();
+        return n;
     }
 
     auto size() const {
