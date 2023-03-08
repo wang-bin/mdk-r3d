@@ -109,7 +109,7 @@ private:
     void process(const UserData& data);
 
     void push(const UserData& data) {
-        unique_lock lock(output_mtx_);
+        const unique_lock lock(output_mtx_);
         outputs_.push(data);
         output_cv_.notify_one();
     }
@@ -314,8 +314,6 @@ static auto init_sdk()
     const auto v = GetGlobalOption("R3DSDK_DIR");
     if (const auto s = get_if<string>(&v))
         sdk_dir = *s;
-    else if (const auto s = get_if<const char*>(&v))
-        sdk_dir = *s;
     if (const auto s = getenv("R3DSDK_DIR"))
         sdk_dir = s;
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
@@ -400,6 +398,7 @@ bool R3DReader::load()
 
 // parameters are ready, prepare jobs here for seeking+decoding in changed(info)
     setupDecodeJobs();
+    adec_.reset();
     audio_blocks_ = clip_->AudioBlockCountAndSize(&audio_block_size_);
     if (audio_blocks_ > 0)
         setupAudio(info.audio[0].codec);
@@ -424,13 +423,13 @@ bool R3DReader::load()
 bool R3DReader::unload()
 {
     {
-        scoped_lock lock(output_mtx_);
+        const scoped_lock lock(output_mtx_);
         output_running_ = false;
         output_cv_.notify_one();
         audio_tasks_.notifyAll();
     }
 
-    lock_guard lock(job_mtx_);
+    const lock_guard lock(job_mtx_);
     update(MediaStatus::Unloaded);
     if (!clip_) {
         update(State::Stopped);
@@ -467,7 +466,7 @@ bool R3DReader::unload()
     frames_ = 0;
     update(State::Stopped);
     { // onJobComplete() after output thread finished
-        unique_lock lock(output_mtx_);
+        const unique_lock lock(output_mtx_);
         outputs_ = {};
     }
     return true;
@@ -541,7 +540,7 @@ bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
                 seeking_--;
                 seekComplete(duration_ * index / frames_, seekId);
             }
-            unique_lock lock(output_mtx_);
+            const unique_lock lock(output_mtx_);
             outputs_ = {};
         }
         push(data);
@@ -567,20 +566,21 @@ bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
 
 void R3DReader::readAudioAt(size_t index, int seekId)
 {
-    if (seekId > 0) {
-        audio_seeking_++;
-        // remove old decode tasks, read index + 1 before exectuting decode task by seek
+    auto flushTasks = [this]{
         // DO NOT clear audio_tasks_ directly, execute all to decrease audio_seeking_
         function<void()> old;
         while (audio_tasks_.tryPop(old))
             old();
+    };
+    if (seekId > 0) {
+        audio_seeking_++;
+        // remove old decode tasks, read index + 1 before exectuting decode task by seek
+        flushTasks();
     }
     audio_tasks_.push([=]{
         if (seekId > 0) {
         // remove old decode tasks, read index + 1 before exectuting decode task by seek
-            function<void()> old;
-            while (audio_tasks_.tryPop(old))
-                old();
+            flushTasks();
             audio_seeking_--;
             adec_->flush();
         }
@@ -910,11 +910,11 @@ void R3DReader::process(const UserData& data)
     const auto seekWaitFrame = data.seekWaitFrame;
     VideoFrame frame;
     if (data.debayerJob) {
-        lock_guard lock(job_mtx_); // debayer_ reset in unload() after wait done
+        const lock_guard lock(job_mtx_); // debayer_ reset in unload() after wait done
         frame = debayer_->wait(data.debayerJob, copy_);
         debayer_->releaseJob(data.debayerJob);
     } else if (data.swJob) {
-        lock_guard lock(job_mtx_);
+        const lock_guard lock(job_mtx_);
         if (!clip_)
             return;
         clip_->DecodeVideoFrame(data.index, *data.swJob);
@@ -972,7 +972,7 @@ void R3DReader::outputLoop()
             continue;
         process(data);
     }
-    unique_lock lock(output_mtx_);
+    const unique_lock lock(output_mtx_);
     outputs_ = {};
     clog << "R3D finish output loop" << endl;
 }
