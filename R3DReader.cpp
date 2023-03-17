@@ -164,6 +164,8 @@ private:
     condition_variable output_cv_;
     mutex output_mtx_;
 
+    bool enable_video_ = true;
+    bool enable_audio_ = true;
     size_t audio_block_size_ = 0;
     size_t audio_blocks_ = 0;
     uint64_t audio_block_duration_ms_ = 0;
@@ -343,7 +345,6 @@ R3DReader::R3DReader()
         clog << "R3D InitializeSdk error: " << ret << endl;
         return;
     }
-    clog << R3DSDK::GetSdkVersion() << endl;
 }
 
 bool R3DReader::load()
@@ -351,6 +352,8 @@ bool R3DReader::load()
     if (!init_)
         return false;
     parseDecoderOptions();
+    enable_video_ &= !activeTracks(MediaType::Video).empty();
+    enable_audio_ &= !activeTracks(MediaType::Audio).empty();
 
     clip_ = make_unique<R3DSDK::Clip>(url().data());
     if (clip_->Status() != R3DSDK::LoadStatus::LSClipLoaded) {
@@ -507,6 +510,9 @@ bool R3DReader::readAt(uint64_t index, int seekId, SeekFlag flag)
     if (!clip_)
         return false;
 
+    if (!enable_video_)
+        return true;
+
     if (async_dec_ || gpu_dec_) {
         auto job = getDecompressJob(index);
         if (!job)
@@ -626,6 +632,8 @@ void R3DReader::readAudioAt(size_t index, int seekId)
 void R3DReader::setupAudio(const AudioCodecParameters& par)
 {
     clog << "Audio blocks: " << audio_blocks_ << ", block size: " << audio_block_size_ << endl;
+    if (!enable_audio_)
+        return;
     adec_ = AudioDecoder::create();
     adec_->set(par);
     if (!adec_->open()) {
@@ -644,12 +652,26 @@ void R3DReader::setupAudio(const AudioCodecParameters& par)
 void R3DReader::parseDecoderOptions()
 {
     // decoder: name:key1=val1:key2=val2
+    enable_video_ = enable_audio_ = false;
     for (const auto& i : decoders(MediaType::Video)) {
         if (auto colon = i.find(':'); colon != string::npos) {
-            if (string_view(i).substr(0, colon) == name()) {
+            if (string_view(i).substr(0, colon) == name() || string_view(i).substr(0, colon) == "auto") {
+                enable_video_ = true;
                 parse(i.data() + colon);
-                return;
+                break;
             }
+        } else {
+            enable_video_ |= i == "auto" || i == name();
+        }
+    }
+    for (const auto& i : decoders(MediaType::Audio)) {
+        if (auto colon = i.find(':'); colon != string::npos) {
+            if (string_view(i).substr(0, colon) == name() || string_view(i).substr(0, colon) == "auto") {
+                enable_audio_ = true;
+                break;
+            }
+        } else {
+            enable_audio_ |= i == "auto" || i == name();
         }
     }
 }
@@ -723,6 +745,8 @@ bool R3DReader::setupDecoder()
 
 void R3DReader::setupDecodeJobs()
 {
+    if (!enable_video_)
+        return;
     const int simultaneousJobs = 8; // frame queue size in renderer is 4
     if (async_dec_ || gpu_dec_) {
         decompress_buf_.resize(simultaneousJobs);
