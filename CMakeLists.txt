@@ -12,7 +12,7 @@ endif()
 find_package(MDK)
 
 if(NOT EXISTS ${R3DSDK}/Include/R3DSDK.h)
-  message(FATAL_ERROR "R3DSDK.h not found in ${R3DSDK}/Include")
+  message("R3DSDK.h not found in ${R3DSDK}/Include")
   return()
 endif()
 message("Build with R3DSDK: ${R3DSDK}")
