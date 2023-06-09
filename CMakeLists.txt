@@ -22,8 +22,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads)
 link_libraries(Threads::Threads)
 
+setup_mdk_plugin(${PROJECT_NAME})
 
-add_library(${PROJECT_NAME} MODULE
+target_sources(${PROJECT_NAME} PRIVATE
     R3DReader.cpp
     R3DCxxAbi.cpp
     Debayer.cpp
@@ -70,5 +71,3 @@ else()
     endif()
   endif()
 endif()
-
-setup_mdk_plugin(${PROJECT_NAME})

@@ -1080,8 +1080,8 @@ void register_framereader_r3d() {
 }
 MDK_NS_END
 
-extern "C" MDK_API int mdk_plugin_load() {
+MDK_PLUGIN(r3d) {
     using namespace MDK_NS;
     register_framereader_r3d();
-    return abiVersion();
+    return MDK_ABI_VERSION;
 }
