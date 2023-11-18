@@ -93,7 +93,7 @@ private:
         uint64_t index = 0;
         int seekId = 0;
         bool seekWaitFrame = true;
-        VideoFrame frame;
+        VideoFrame frame; // TODO: BufferRef with deleter to recyle Buffer*. BufferPool clear buffers if size or format changed
         size_t decompressIndex = 0;
         void* debayerJob = nullptr;
         R3DSDK::VideoDecodeJob* swJob = nullptr;
@@ -1032,19 +1032,18 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
             scaleToW_ = strtoul(val.data(), &s, 10);
             if (s && s[0] == 'x')
                 scaleToH_ = strtoul(s + 1, nullptr, 10);
-        } else if (val.find('/') != string::npos) { // closest scale to target resolution
-            char* s = nullptr;
-            auto x = strtoul(val.data(), &s, 10);
-            if (s && s[0] == '/')
-                x = strtoul(s + 1, nullptr, 10);
-            if (x == 2)
-                mode_ = R3DSDK::DECODE_HALF_RES_PREMIUM;
-            else if (x == 4)
-                mode_ = R3DSDK::DECODE_QUARTER_RES_GOOD;
-            else if (x == 8)
-                mode_ = R3DSDK::DECODE_EIGHT_RES_GOOD;
-            else if (x == 16)
+        } else if (val.find("1/") != string::npos) { // closest scale to target resolution
+            auto s = atoi(&val[2]);
+            if (s >= 12)
                 mode_ = R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
+            else if (s >= 6)
+                mode_ = R3DSDK::DECODE_EIGHT_RES_GOOD;
+            else if (s >= 3)
+                mode_ = R3DSDK::DECODE_QUARTER_RES_GOOD;
+            else if (s > 1)
+                mode_ = R3DSDK::DECODE_HALF_RES_PREMIUM;
+            else
+                mode_ = R3DSDK::DECODE_FULL_RES_PREMIUM;
         } else {
             scaleToW_ = strtoul(val.data(), nullptr, 10);
             scaleToH_ = scaleToW_;
@@ -1070,6 +1069,11 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         else
             decompress_ = Decompress::R3D;
     }
+        return;
+    case "decoder"_svh:
+    case "video.decoder"_svh:
+        clog << "r3d.decoder: " << val << endl;
+        parse(val.data());
         return;
     }
 }
