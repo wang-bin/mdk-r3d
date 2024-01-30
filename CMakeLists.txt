@@ -34,9 +34,7 @@ if(APPLE)
 endif()
 set_target_properties(${PROJECT_NAME} PROPERTIES
     #VERSION ${PROJECT_VERSION} # -current_version can not be applied for MODULE
-    SOVERSION ${PROJECT_VERSION_MAJOR}
     OUTPUT_NAME ${PROJECT_NAME}
-    CLEAN_DIRECT_OUTPUT 1
   )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Include)
@@ -70,4 +68,8 @@ else()
       endif()
     endif()
   endif()
+endif()
+
+if(TARGET cppcompat) # requires https://github.com/wang-bin/cppcompat
+  target_link_libraries(${PROJECT_NAME} PRIVATE cppcompat)
 endif()
