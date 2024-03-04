@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 WangBin <wbsecg1 at gmail.com>
+ * Copyright (c) 2023-2024 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
 #include "mdk/FrameReader.h"
@@ -402,6 +402,7 @@ bool R3DReader::load()
 // parameters are ready, prepare jobs here for seeking+decoding in changed(info)
     setupDecodeJobs();
     adec_.reset();
+    audio_block_duration_ms_ = 0;
     audio_blocks_ = clip_->AudioBlockCountAndSize(&audio_block_size_);
     if (audio_blocks_ > 0)
         setupAudio(info.audio[0].codec);
