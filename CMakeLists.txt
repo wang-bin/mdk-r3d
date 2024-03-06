@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(mdk-r3d VERSION 0.19.0 DESCRIPTION "mdk r3d plugin")
+project(mdk-r3d VERSION 0.25.0 DESCRIPTION "mdk r3d plugin")
 set(PROJECT_VERSION_TWEAK 0)
 
 set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/r3dsdk" CACHE STRING "R3D SDK dir")
@@ -43,7 +43,8 @@ math(EXPR BITS "8 * ${CMAKE_SIZEOF_VOID_P}")
 if(APPLE)
   target_link_directories(${PROJECT_NAME} PRIVATE ${R3DSDK}/Lib/mac64)
   target_link_libraries(${PROJECT_NAME} PRIVATE R3DSDK-libcpp "-framework Metal" "-framework CoreGraphics" "-framework CoreFoundation")
-  # set rpath
+  target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/sdk/lib")
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE -weak-lREDDecoder -weak-lREDR3D -weak-lREDMetal -weak-lREDOpenCL)
 elseif(WIN32)
   set(VCRT_TYPE MD)
   if(MSVC AND CMAKE_MSVC_RUNTIME_LIBRARY AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "MultiThreaded.*DLL")
