@@ -345,6 +345,7 @@ R3DReader::R3DReader()
         clog << "R3D InitializeSdk error: " << ret << endl;
         return;
     }
+    clog << R3DSDK::GetSdkVersion() << endl;
 }
 
 bool R3DReader::load()
@@ -369,7 +370,7 @@ bool R3DReader::load()
         audio_thread_.join();
     if (output_thread_.joinable())
         output_thread_.join();
-    output_thread_ = thread([=]{
+    output_thread_ = thread([this]{
         outputLoop();
     });
 
@@ -584,7 +585,7 @@ void R3DReader::readAudioAt(size_t index, int seekId)
         // remove old decode tasks, read index + 1 before exectuting decode task by seek
         flushTasks();
     }
-    audio_tasks_.push([=]{
+    audio_tasks_.push([=,this]{
         if (seekId > 0) {
         // remove old decode tasks, read index + 1 before exectuting decode task by seek
             flushTasks();
