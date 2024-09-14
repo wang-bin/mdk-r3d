@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(mdk-r3d VERSION 0.25.0 DESCRIPTION "mdk r3d plugin")
+project(mdk-r3d VERSION 0.29.1 DESCRIPTION "mdk r3d plugin")
 set(PROJECT_VERSION_TWEAK 0)
 
 set(R3DSDK "${CMAKE_CURRENT_SOURCE_DIR}/r3dsdk" CACHE STRING "R3D SDK dir")
@@ -12,11 +12,10 @@ endif()
 find_package(MDK)
 
 if(NOT EXISTS ${R3DSDK}/Include/R3DSDK.h)
-  message("R3DSDK.h not found in ${R3DSDK}/Include")
-  return()
+  message(FATAL_ERROR "R3DSDK.h not found in ${R3DSDK}/Include")
 endif()
 message("Build with R3DSDK: ${R3DSDK}")
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Threads)
