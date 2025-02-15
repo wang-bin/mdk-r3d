@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 WangBin <wbsecg1 at gmail.com>
+ * Copyright (c) 2023-2025 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
 #include "mdk/FrameReader.h"
@@ -1029,12 +1029,12 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         return;
     case "scale"_svh: // 1/2, 1/4, 1/8, 1/16
     case "size"_svh: { // widthxheight or width(height=width)
-        if (val.find('x') != string::npos) { // closest scale to target resolution
+        if (val.contains('x')) { // closest scale to target resolution
             char* s = nullptr;
             scaleToW_ = strtoul(val.data(), &s, 10);
             if (s && s[0] == 'x')
                 scaleToH_ = strtoul(s + 1, nullptr, 10);
-        } else if (val.find("1/") != string::npos) { // closest scale to target resolution
+        } else if (val.starts_with("1/")) { // closest scale to target resolution
             auto s = atoi(&val[2]);
             if (s >= 12)
                 mode_ = R3DSDK::DECODE_SIXTEENTH_RES_GOOD;
@@ -1054,7 +1054,7 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
         return;
     case "ipp"_svh:
     case "image_pipeline"_svh: {
-        if (val.find("primary") != string::npos)
+        if (val.contains("primary"))
             ipp_ = R3DSDK::Primary_Development_Only;
         else
             ipp_ = R3DSDK::Full_Graded;
@@ -1080,14 +1080,10 @@ void R3DReader::onPropertyChanged(const std::string& key, const std::string& val
     }
 }
 
-
-void register_framereader_r3d() {
-    FrameReader::registerOnce("R3D", []{return new R3DReader();});
-}
 MDK_NS_END
 
 MDK_PLUGIN(r3d) {
     using namespace MDK_NS;
-    register_framereader_r3d();
+    FrameReader::registerOnce("R3D", []{return new R3DReader();});
     return MDK_ABI_VERSION;
 }
