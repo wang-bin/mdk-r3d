@@ -321,6 +321,7 @@ static auto init_sdk()
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
     // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
     int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL|OPTION_RED_CUDA; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+    flags |= OPTION_DELAY_GPU_COMPILE; // 8.6 opencl
 #if (__APPLE__ + 0)
     flags |= OPTION_RED_METAL;
 #endif
@@ -726,7 +727,7 @@ bool R3DReader::setupDecoder()
     //options->setScratchFolder("");            //empty string disables scratch folder. c++ abi
     options->setDecompressionThreadCount(0);    //cores - 1 is good if you are a gui based app.
     options->setConcurrentImageCount(0);        //threads to process images/manage state of image processing.
-    options->useRRXAsync(true);
+    //options->useRRXAsync(true); // removed in 8.6
 
     status = SetupCudaCLDevices(options, gpu_);
     if (status != R3DSDK::R3DStatus_Ok) {
@@ -794,7 +795,7 @@ void R3DReader::setupDecodeJobs()
             job.PixelType = from(format_);
             const auto& frame = frame_[i];
             job.OutputBuffer = frame.buffer()->data();
-            job.BytesPerRow = frame.buffer()->stride();
+            //job.BytesPerRow = frame.buffer()->stride(); // removed in 8.6
             job.OutputBufferSize = frame.format().bytesPerFrame(scaleToW_, scaleToH_);
             job.ImageProcessing = &ipsettings_;
             sw_job_.push_back(std::move(job));
