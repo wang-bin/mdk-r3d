@@ -1086,5 +1086,6 @@ MDK_NS_END
 MDK_PLUGIN(r3d) {
     using namespace MDK_NS;
     FrameReader::registerOnce("R3D", []{return new R3DReader();});
+    FrameReader::registerOnce("NEV", []{return new R3DReader();});
     return MDK_ABI_VERSION;
 }
