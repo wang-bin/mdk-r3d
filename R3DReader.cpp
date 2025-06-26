@@ -321,7 +321,9 @@ static auto init_sdk()
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
     // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
     int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL|OPTION_RED_CUDA; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+#ifdef OPTION_DELAY_GPU_COMPILE
     flags |= OPTION_DELAY_GPU_COMPILE; // 8.6 opencl
+#endif
 #if (__APPLE__ + 0)
     flags |= OPTION_RED_METAL;
 #endif
