@@ -313,7 +313,7 @@ static auto init_sdk()
 #endif
 
     string sdk_dir = "."; // TODO: default is Framework/Plugins dir, dll dir, so dir
-    const auto v = GetGlobalOption("R3DSDK_DIR");
+    decltype(auto) v = GetGlobalOption("R3DSDK_DIR");
     if (const auto s = get_if<string>(&v))
         sdk_dir = *s;
     if (const auto s = getenv("R3DSDK_DIR"))
