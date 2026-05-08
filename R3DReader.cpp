@@ -34,6 +34,8 @@
 // TODO: 1 job + frame pool(mutex based)
 // TODO: safe queue
 
+#define R3D_NO_DECODER ((_WIN32 + 0) && ((_M_ARM64 + 0) || (__ARM_ARCH + 0)))
+
 using namespace std;
 
 MDK_NS_BEGIN
@@ -320,7 +322,10 @@ static auto init_sdk()
         sdk_dir = s;
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
     // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
-    int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+    int flags = OPTION_RED_OPENCL; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+#if !R3D_NO_DECODER
+    flags |= OPTION_RED_DECODER;
+#endif
 #ifdef OPTION_DELAY_GPU_COMPILE
     flags |= OPTION_DELAY_GPU_COMPILE; // 8.6 opencl
 #endif
@@ -351,6 +356,9 @@ R3DReader::R3DReader()
         return;
     }
     clog << R3DSDK::GetSdkVersion() << endl;
+#if R3D_NO_DECODER
+    decompress_ = Decompress::Cpu;
+#endif
 }
 
 bool R3DReader::load()
