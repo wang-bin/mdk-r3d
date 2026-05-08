@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2025 WangBin <wbsecg1 at gmail.com>
+ * Copyright (c) 2023-2026 WangBin <wbsecg1 at gmail.com>
  * r3d plugin for libmdk
  */
 #include "mdk/FrameReader.h"
@@ -320,12 +320,14 @@ static auto init_sdk()
         sdk_dir = s;
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
     // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
-    int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL|OPTION_RED_CUDA; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
+    int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
 #ifdef OPTION_DELAY_GPU_COMPILE
     flags |= OPTION_DELAY_GPU_COMPILE; // 8.6 opencl
 #endif
 #if (__APPLE__ + 0)
     flags |= OPTION_RED_METAL;
+#elif defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || /*vc*/defined(_M_X64) || defined(_M_AMD64)
+    flags |= OPTION_RED_CUDA; // 9.2.0 error: InitializeStatus::ISCudaNotAvailable
 #endif
     auto ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags); // TODO: depends on decoder option, fallback to default if failed
     if (ret == R3DSDK::ISRedCudaLibraryNotFound) {
@@ -599,6 +601,7 @@ void R3DReader::readAudioAt(size_t index, int seekId)
             return;
 
         size_t size = audio_buf_.size();
+        // can be f32 or s24, see RMD_SAMPLE_SIZE
         if (const auto ret = clip_->DecodeAudioBlock(index, audio_buf_.data(), &size); ret != R3DSDK::DSDecodeOK) {
             clog << "DecodeAudioBlock error: " << ret << endl;
             return;
