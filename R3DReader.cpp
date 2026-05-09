@@ -34,8 +34,6 @@
 // TODO: 1 job + frame pool(mutex based)
 // TODO: safe queue
 
-#define R3D_NO_DECODER ((_WIN32 + 0) && ((_M_ARM64 + 0) || (__ARM_ARCH + 0)))
-
 using namespace std;
 
 MDK_NS_BEGIN
@@ -322,10 +320,7 @@ static auto init_sdk()
         sdk_dir = s;
     // InitializeSdk again w/o FinalizeSdk will crash. So init as much components(via flags) as possible only once and then all possible features are available
     // a flag will try to load corresponding runtime library, for example OPTION_RED_DECODER is REDDecoder.dylib/REDDecoder-x64.dll
-    int flags = OPTION_RED_OPENCL; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
-#if !R3D_NO_DECODER
-    flags |= OPTION_RED_DECODER;
-#endif
+    int flags = OPTION_RED_DECODER|OPTION_RED_OPENCL; // doc says DECODER can not combine with OPENCL/CUDA, but seems ok in my tests
 #ifdef OPTION_DELAY_GPU_COMPILE
     flags |= OPTION_DELAY_GPU_COMPILE; // 8.6 opencl
 #endif
@@ -334,31 +329,48 @@ static auto init_sdk()
 #elif defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || /*vc*/defined(_M_X64) || defined(_M_AMD64)
     flags |= OPTION_RED_CUDA; // 9.2.0 error: InitializeStatus::ISCudaNotAvailable
 #endif
-    auto ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags); // TODO: depends on decoder option, fallback to default if failed
-    if (ret == R3DSDK::ISRedCudaLibraryNotFound) {
-        flags &= ~OPTION_RED_CUDA;
-        ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags);
+    using namespace R3DSDK;
+    InitializeStatus ret; // TODO: depends on decoder option, fallback to default if failed
+    while ((ret = InitializeSdk(sdk_dir.data(), flags)) != ISInitializeOK) {
+        switch (ret) {
+        case ISRedCudaLibraryNotFound:
+        case ISInvalidRedCudaLibrary:
+        case ISRedCudaLibraryInitializeFailed:
+        case ISCudaNotAvailable:
+            flags &= ~OPTION_RED_CUDA;
+            clog << "R3D: CUDA not found or failed to initialize, disable and try again" << endl;
+            continue;
+        case ISRedOpenCLLibraryNotFound:
+        case ISInvalidRedOpenCLLibrary:
+        case ISRedOpenCLLibraryInitializeFailed:
+            flags &= ~OPTION_RED_OPENCL;
+            clog << "R3D: OpenCL not found or failed to initialize, disable and try again" << endl;
+            continue;
+        case ISR3DDecoderLibraryNotFound:
+        case ISInvalidR3DDecoderLibrary:
+        case ISR3DDecoderLibraryInitializeFailed:
+            flags &= ~OPTION_RED_DECODER;
+            clog << "R3D: Decoder not found or failed to initialize, disable and try again" << endl;
+            continue;
+        default:
+             clog << "R3D InitializeSdk error: " << ret << endl;
+             return 0;
+        }
     }
-    if (ret == R3DSDK::ISRedOpenCLLibraryNotFound) {
-        flags &= ~OPTION_RED_OPENCL;
-        ret = R3DSDK::InitializeSdk(sdk_dir.data(), flags);
-    }
-    return ret;
+    return flags;
 }
 
 R3DReader::R3DReader()
     : FrameReader()
 {
     static const auto ret = init_sdk();
-    init_ = ret == R3DSDK::ISInitializeOK;
-    if (ret != R3DSDK::ISInitializeOK) {
-        clog << "R3D InitializeSdk error: " << ret << endl;
+    init_ = ret != 0;
+    if (!init_)
         return;
-    }
     clog << R3DSDK::GetSdkVersion() << endl;
-#if R3D_NO_DECODER
-    decompress_ = Decompress::Cpu;
-#endif
+    if (!(ret & OPTION_RED_DECODER)) {
+        decompress_ = Decompress::Cpu;
+    }
 }
 
 bool R3DReader::load()
