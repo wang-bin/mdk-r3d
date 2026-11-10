@@ -633,7 +633,7 @@ void R3DReader::readAudioAt(size_t index, int seekId)
         pkt.hasKeyFrame = true;
         pkt.pts = pkt.dts = pts;
         pkt.buffer = make_shared<ByteArrayBuffer>(size, audio_buf_.constData());
-        if (adec_->decode(pkt) < 0) {
+        if (adec_->process(pkt) < 0) {
             clog << "audio decode error" << endl;
             return;
         }
